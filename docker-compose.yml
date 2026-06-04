@@ -1,0 +1,43 @@
+version: '3.4'
+
+services:
+  new-api:
+    image: new-api-corefusion:latest
+    container_name: new-api
+    restart: always
+    ports:
+      - "3010:3000"
+    environment:
+      - TZ=Asia/Shanghai
+      - SQL_DSN=root:newapi123@tcp(mysql:3306)/newapi
+      - REDIS_CONN_STRING=redis://redis:6379
+      - SESSION_SECRET=6e21bedce425e13b2a61b74d9897dc78d6696e3b7692cf71b2de6cef3be7083f
+      - CRYPTO_SECRET=286b18a729c3810f7d2e8263661f809c2ff59f949aeb5a870c538443a093e15f
+    volumes:
+      - ./data:/data
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  mysql:
+    image: mysql:8
+    container_name: new-api-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: newapi123
+      MYSQL_DATABASE: newapi
+      TZ: Asia/Shanghai
+    volumes:
+      - ./mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pnewapi123"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: new-api-redis
+    restart: always

@@ -1,0 +1,15 @@
+# Runtime data
+data/
+mysql/
+
+# Secrets and generated deployment artifacts
+deploy/production/.env
+deploy/production/mysql-init/
+deploy/production/image/
+*.tar
+*.tar.gz
+*.sql
+
+# Local/editor noise
+.DS_Store
+*.log
