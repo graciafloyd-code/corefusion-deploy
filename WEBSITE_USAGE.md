@@ -295,3 +295,22 @@ docker logs --tail=200 corefusion-caddy
 ```text
 https://supchuang.com/
 ```
+
+## 16. 试运营材料
+
+P1 试运营材料已补齐，存放在：
+
+```text
+operations/
+```
+
+| 文件 | 用途 |
+| --- | --- |
+| operations/USER_AGREEMENT.md | 用户服务协议 |
+| operations/PRIVACY_POLICY.md | 隐私政策 |
+| operations/SUPPORT_AND_REFUND_POLICY.md | 充值、退款与售后规则 |
+| operations/CUSTOMER_API_GUIDE.md | 普通客户 API 接入指南 |
+| operations/DISTRIBUTOR_HANDOFF_TEMPLATE.md | 分销商交付模板 |
+| operations/MANUAL_RECHARGE_SOP.md | 手动充值与额度调整 SOP |
+| operations/MODEL_PRICING_TEMPLATE.md | 模型价格表模板 |
+| operations/FIRST_BATCH_TESTING_CHECKLIST.md | 首批客户测试清单 |
