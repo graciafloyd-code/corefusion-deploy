@@ -5,6 +5,9 @@
 - 官网入口：https://supchuang.com/
 - 后台入口：https://supchuang.com/
 - API 接口地址：https://supchuang.com/v1
+- 帮助中心：https://supchuang.com/docs/
+- 用户协议：https://supchuang.com/user-agreement
+- 隐私政策：https://supchuang.com/privacy-policy
 - 管理员账号：以交付信息为准
 - 管理员密码：以交付信息为准
 
