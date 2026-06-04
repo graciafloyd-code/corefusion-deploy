@@ -5,6 +5,9 @@ VPS_HOST="${VPS_HOST:-72.61.114.187}"
 VPS_USER="${VPS_USER:-root}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/corefusion}"
 BUNDLE="${BUNDLE:-corefusion-production-deploy.tar.gz}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/github_id_ed25519}"
+
+SSH_OPTS=(-i "$SSH_KEY" -o IdentitiesOnly=yes)
 
 if [ ! -f "$BUNDLE" ]; then
   echo "Bundle not found: $BUNDLE"
@@ -13,10 +16,10 @@ if [ ! -f "$BUNDLE" ]; then
 fi
 
 echo "Uploading $BUNDLE to ${VPS_USER}@${VPS_HOST}..."
-scp "$BUNDLE" "${VPS_USER}@${VPS_HOST}:/tmp/${BUNDLE}"
+scp "${SSH_OPTS[@]}" "$BUNDLE" "${VPS_USER}@${VPS_HOST}:/tmp/${BUNDLE}"
 
 echo "Installing on VPS..."
-ssh "${VPS_USER}@${VPS_HOST}" bash -s <<EOF
+ssh "${SSH_OPTS[@]}" "${VPS_USER}@${VPS_HOST}" bash -s <<EOF
 set -euo pipefail
 mkdir -p "$REMOTE_DIR"
 tar -xzf "/tmp/$BUNDLE" -C /tmp

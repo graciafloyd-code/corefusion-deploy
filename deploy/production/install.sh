@@ -9,7 +9,10 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 mkdir -p "$APP_DIR"
-cp -a docker-compose.yml Caddyfile .env mysql-init "$APP_DIR"/
+SOURCE_DIR="$(pwd)"
+if [ "$SOURCE_DIR" != "$APP_DIR" ]; then
+  cp -a docker-compose.yml Caddyfile .env mysql-init "$APP_DIR"/
+fi
 
 if [ -f image/new-api-corefusion-latest.tar ]; then
   docker load -i image/new-api-corefusion-latest.tar
