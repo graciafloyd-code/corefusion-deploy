@@ -28,7 +28,12 @@
   };
 
   const leadStatuses = ['New', 'Contacted', 'Qualified', 'Converted', 'Closed'];
+  let allLeadItems = [];
   let currentLeadItems = [];
+  const leadFilters = {
+    query: '',
+    status: '',
+  };
 
   const sampleLeads = [
     {
@@ -284,7 +289,9 @@
   function renderLeadTableFromItems(items) {
     const table = document.querySelector('[data-lead-table]');
     if (!table) return;
-    currentLeadItems = items;
+    allLeadItems = items;
+    const visibleItems = filterLeadItems(items);
+    currentLeadItems = visibleItems;
 
     if (!items.length) {
       table.innerHTML = `
@@ -296,11 +303,21 @@
       return;
     }
 
+    if (!visibleItems.length) {
+      table.innerHTML = `
+        <div class="empty-state">
+          <strong>No leads match the current filters.</strong>
+          <span>Clear the search keyword or choose another status.</span>
+        </div>
+      `;
+      return;
+    }
+
     table.innerHTML = `
       <div class="lead-row lead-row-head">
         <span>ID</span><span>Scenario</span><span>Company</span><span>Contact</span><span>Status</span><span>Created</span><span>Action</span>
       </div>
-      ${items.map((lead) => `
+      ${visibleItems.map((lead) => `
         <div class="lead-row" data-lead-id="${leadID(lead)}">
           <span>${leadID(lead)}</span>
           <span>${lead.scenario || '-'}</span>
@@ -318,6 +335,28 @@
         </div>
       `).join('')}
     `;
+  }
+
+  function filterLeadItems(items) {
+    const query = leadFilters.query.trim().toLowerCase();
+    const status = leadFilters.status;
+    return items.filter((lead) => {
+      const matchesStatus = !status || (lead.status || 'New') === status;
+      const haystack = [
+        leadID(lead),
+        lead.scenario,
+        lead.company,
+        lead.country,
+        lead.contact_name,
+        lead.email,
+        lead.phone,
+        lead.usage_profile,
+        lead.budget,
+        lead.notes,
+      ].filter(Boolean).join(' ').toLowerCase();
+      const matchesQuery = !query || haystack.includes(query);
+      return matchesStatus && matchesQuery;
+    });
   }
 
   function renderLeadDetail(lead) {
@@ -697,6 +736,22 @@
         }, 1200);
       }
     });
+  }
+
+  function setupLeadFilters() {
+    const search = document.querySelector('[data-lead-search]');
+    const status = document.querySelector('[data-lead-filter-status]');
+    const syncAndRender = () => {
+      leadFilters.query = search?.value || '';
+      leadFilters.status = status?.value || '';
+      renderLeadTableFromItems(allLeadItems);
+    };
+    if (search) {
+      search.addEventListener('input', syncAndRender);
+    }
+    if (status) {
+      status.addEventListener('change', syncAndRender);
+    }
   }
 
   function setupAdminTokenForm() {
@@ -1081,6 +1136,7 @@
   setupLeadForm();
   setupSampleLeads();
   setupLeadStatusActions();
+  setupLeadFilters();
   setupAdminLoginForm();
   setupAdminTokenForm();
   setupCustomerForm();

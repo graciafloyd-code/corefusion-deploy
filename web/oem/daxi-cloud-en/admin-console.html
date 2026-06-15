@@ -83,7 +83,18 @@
               <h2>Customer registration intake</h2>
               <p>All public Get Started submissions land here for manual follow-up.</p>
             </div>
-            <button type="button" data-seed-leads>Load sample leads</button>
+            <div class="lead-tools">
+              <input type="search" placeholder="Search company, contact, scenario..." data-lead-search />
+              <select data-lead-filter-status>
+                <option value="">All statuses</option>
+                <option value="New">New</option>
+                <option value="Contacted">Contacted</option>
+                <option value="Qualified">Qualified</option>
+                <option value="Converted">Converted</option>
+                <option value="Closed">Closed</option>
+              </select>
+              <button type="button" data-seed-leads>Load sample leads</button>
+            </div>
           </div>
           <div class="lead-table" data-lead-table></div>
           <div class="lead-detail-panel" data-lead-detail>
