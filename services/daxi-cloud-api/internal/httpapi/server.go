@@ -74,6 +74,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /admin/audit-logs", s.admin(s.handleListAuditLogs))
 	s.mux.HandleFunc("GET /admin/leads", s.admin(s.handleListLeads))
 	s.mux.HandleFunc("PATCH /admin/leads/", s.admin(s.handlePatchLead))
+	s.mux.HandleFunc("GET /admin/leads/", s.admin(s.handleListLeadActivities))
+	s.mux.HandleFunc("POST /admin/leads/", s.admin(s.handleCreateLeadActivity))
 	s.mux.HandleFunc("GET /admin/compute-inquiries", s.admin(s.handleListComputeInquiries))
 	s.mux.HandleFunc("GET /admin/customers", s.admin(s.handleListCustomers))
 	s.mux.HandleFunc("POST /admin/customers", s.admin(s.handleCreateCustomer))
@@ -349,6 +351,60 @@ func (s *Server) handlePatchLead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleListLeadActivities(w http.ResponseWriter, r *http.Request) {
+	publicID, ok := leadActivityPathID(r.URL.Path)
+	if !ok {
+		writeError(w, http.StatusNotFound, "lead activity route not found")
+		return
+	}
+	items, err := s.store.ListLeadActivities(publicID, parseLimit(r))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "lead not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleCreateLeadActivity(w http.ResponseWriter, r *http.Request) {
+	publicID, ok := leadActivityPathID(r.URL.Path)
+	if !ok {
+		writeError(w, http.StatusNotFound, "lead activity route not found")
+		return
+	}
+	var req model.LeadActivity
+	if err := readJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+	req.Actor = defaultString(req.Actor, "admin")
+	req.Action = defaultString(req.Action, "note.added")
+	item, err := s.store.CreateLeadActivity(publicID, req)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "lead not found")
+			return
+		}
+		badRequest(w, err)
+		return
+	}
+	_ = s.store.RecordAdminAudit("admin", "lead.activity", publicID, item.Action)
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func leadActivityPathID(path string) (string, bool) {
+	trimmed := strings.TrimPrefix(path, "/admin/leads/")
+	if !strings.HasSuffix(trimmed, "/activities") {
+		return "", false
+	}
+	publicID := strings.TrimSuffix(trimmed, "/activities")
+	publicID = strings.Trim(publicID, "/")
+	return publicID, publicID != ""
 }
 
 func (s *Server) handleListComputeInquiries(w http.ResponseWriter, r *http.Request) {

@@ -20,6 +20,18 @@ type Lead struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+type LeadActivity struct {
+	ID           int64     `json:"id"`
+	PublicID     string    `json:"public_id"`
+	LeadID       int64     `json:"lead_id"`
+	LeadPublicID string    `json:"lead_public_id"`
+	Actor        string    `json:"actor"`
+	Action       string    `json:"action"`
+	Note         string    `json:"note"`
+	NextStep     string    `json:"next_step"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 type ComputeInquiry struct {
 	ID           int64     `json:"id"`
 	PublicID     string    `json:"public_id"`

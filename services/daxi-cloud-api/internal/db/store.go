@@ -58,6 +58,17 @@ func (s *Store) Migrate() error {
 			updated_at DATETIME NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_leads_status_created ON leads(status, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS lead_activities (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			public_id TEXT NOT NULL UNIQUE,
+			lead_id INTEGER NOT NULL REFERENCES leads(id),
+			actor TEXT NOT NULL,
+			action TEXT NOT NULL,
+			note TEXT,
+			next_step TEXT,
+			created_at DATETIME NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_lead_activities_lead_created ON lead_activities(lead_id, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS compute_inquiries (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			public_id TEXT NOT NULL UNIQUE,
@@ -470,11 +481,87 @@ func (s *Store) ListLeads(limit int) ([]model.Lead, error) {
 }
 
 func (s *Store) UpdateLeadStatus(publicID, status string) error {
+	lead, err := s.GetLead(publicID)
+	if err != nil {
+		return err
+	}
 	result, err := s.db.Exec(`UPDATE leads SET status = ?, updated_at = ? WHERE public_id = ?`, status, time.Now().UTC(), publicID)
 	if err != nil {
 		return err
 	}
-	return checkAffected(result)
+	if err := checkAffected(result); err != nil {
+		return err
+	}
+	_, _ = s.CreateLeadActivity(publicID, model.LeadActivity{
+		Actor:  "admin",
+		Action: "status.updated",
+		Note:   fmt.Sprintf("Status changed from %s to %s.", defaultString(lead.Status, "New"), status),
+	})
+	return nil
+}
+
+func (s *Store) GetLead(publicID string) (model.Lead, error) {
+	row := s.db.QueryRow(`SELECT id, public_id, source, scenario, company, country, contact_name, email, phone, usage_profile, budget, notes, status, created_at, updated_at FROM leads WHERE public_id = ?`, publicID)
+	var lead model.Lead
+	if err := row.Scan(&lead.ID, &lead.PublicID, &lead.Source, &lead.Scenario, &lead.Company, &lead.Country, &lead.ContactName, &lead.Email, &lead.Phone, &lead.UsageProfile, &lead.Budget, &lead.Notes, &lead.Status, &lead.CreatedAt, &lead.UpdatedAt); err != nil {
+		return model.Lead{}, err
+	}
+	return lead, nil
+}
+
+func (s *Store) CreateLeadActivity(leadPublicID string, activity model.LeadActivity) (model.LeadActivity, error) {
+	lead, err := s.GetLead(leadPublicID)
+	if err != nil {
+		return model.LeadActivity{}, err
+	}
+	now := time.Now().UTC()
+	item := model.LeadActivity{
+		PublicID:     newPublicID("DXN"),
+		LeadID:       lead.ID,
+		LeadPublicID: lead.PublicID,
+		Actor:        defaultString(activity.Actor, "admin"),
+		Action:       defaultString(activity.Action, "note.added"),
+		Note:         strings.TrimSpace(activity.Note),
+		NextStep:     strings.TrimSpace(activity.NextStep),
+		CreatedAt:    now,
+	}
+	if strings.TrimSpace(item.Note) == "" && strings.TrimSpace(item.NextStep) == "" {
+		return model.LeadActivity{}, fmt.Errorf("note or next_step is required")
+	}
+	result, err := retryPublicID(func() { item.PublicID = newPublicID("DXN") }, func() (sql.Result, error) {
+		return s.db.Exec(`INSERT INTO lead_activities(public_id, lead_id, actor, action, note, next_step, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			item.PublicID, item.LeadID, item.Actor, item.Action, item.Note, item.NextStep, item.CreatedAt)
+	})
+	if err != nil {
+		return model.LeadActivity{}, err
+	}
+	item.ID, _ = result.LastInsertId()
+	return item, nil
+}
+
+func (s *Store) ListLeadActivities(leadPublicID string, limit int) ([]model.LeadActivity, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	lead, err := s.GetLead(leadPublicID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(`SELECT id, public_id, lead_id, actor, action, note, next_step, created_at FROM lead_activities WHERE lead_id = ? ORDER BY created_at DESC LIMIT ?`, lead.ID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.LeadActivity{}
+	for rows.Next() {
+		var item model.LeadActivity
+		if err := rows.Scan(&item.ID, &item.PublicID, &item.LeadID, &item.Actor, &item.Action, &item.Note, &item.NextStep, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		item.LeadPublicID = lead.PublicID
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) CreateComputeInquiry(inquiry *model.ComputeInquiry) error {

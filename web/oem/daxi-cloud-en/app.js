@@ -146,6 +146,16 @@
     return payload;
   }
 
+  function escapeHTML(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[char]));
+  }
+
   async function submitPublicLead(path, payload, fallbackStatus) {
     try {
       const saved = await apiJSON(path, {
@@ -359,7 +369,20 @@
     });
   }
 
-  function renderLeadDetail(lead) {
+  async function fetchLeadActivities(publicID) {
+    const result = await apiJSON(`/admin/leads/${encodeURIComponent(publicID)}/activities?limit=50`, { admin: true });
+    return result.items || [];
+  }
+
+  async function createLeadActivity(publicID, payload) {
+    return apiJSON(`/admin/leads/${encodeURIComponent(publicID)}/activities`, {
+      method: 'POST',
+      admin: true,
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async function renderLeadDetail(lead) {
     const panel = document.querySelector('[data-lead-detail]');
     if (!panel) return;
     if (!lead) {
@@ -373,6 +396,15 @@
     }
     const publicID = leadID(lead);
     const contact = [lead.contact_name, lead.email, lead.phone].filter(Boolean).join(' / ') || '-';
+    let activities = [];
+    let activityError = '';
+    if (!publicID.startsWith('DX-')) {
+      try {
+        activities = await fetchLeadActivities(publicID);
+      } catch (error) {
+        activityError = error.message;
+      }
+    }
     panel.innerHTML = `
       <div class="lead-detail-card">
         <div class="lead-detail-head">
@@ -399,6 +431,35 @@
           <strong>Recommended handoff</strong>
           <span>Confirm contact and usage scope, then send the qualified lead to platform operations for customer record, API key, token package, and recharge setup.</span>
         </div>
+        <form class="lead-activity-form" data-lead-activity-form data-lead-id="${publicID}">
+          <label>Follow-up note<textarea name="note" placeholder="Record call summary, qualification result, or customer requirement..."></textarea></label>
+          <label>Next step<input name="next_step" placeholder="Example: send pricing, schedule demo, wait for platform activation" /></label>
+          <button type="submit">Add Follow-up</button>
+          <p class="form-status" data-lead-activity-status></p>
+        </form>
+        <div class="lead-activity-timeline" data-lead-activity-timeline>
+          ${renderLeadActivityTimeline(activities, activityError)}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderLeadActivityTimeline(items, error) {
+    if (error) {
+      return `<div class="empty-state"><strong>Activity unavailable.</strong><span>${escapeHTML(error)}</span></div>`;
+    }
+    if (!items.length) {
+      return '<div class="empty-state"><strong>No follow-up activity yet.</strong><span>Add a note after the first customer contact.</span></div>';
+    }
+    return `
+      <div class="timeline-list">
+        ${items.map((item) => `
+          <article>
+            <div><strong>${escapeHTML(item.action || 'note.added')}</strong><span>${formatDate(item.created_at)} · ${escapeHTML(item.actor || 'admin')}</span></div>
+            ${item.note ? `<p>${escapeHTML(item.note)}</p>` : ''}
+            ${item.next_step ? `<small>Next: ${escapeHTML(item.next_step)}</small>` : ''}
+          </article>
+        `).join('')}
       </div>
     `;
   }
@@ -695,9 +756,9 @@
   }
 
   function setupLeadStatusActions() {
-    const table = document.querySelector('[data-lead-table]');
-    if (!table) return;
-    table.addEventListener('click', async (event) => {
+    const main = document.querySelector('.console-main');
+    if (!main) return;
+    main.addEventListener('click', async (event) => {
       const detailButton = event.target.closest('[data-lead-detail-open]');
       if (detailButton) {
         const row = detailButton.closest('[data-lead-id]');
@@ -734,6 +795,43 @@
           button.disabled = false;
           button.textContent = original;
         }, 1200);
+      }
+    });
+  }
+
+  function setupLeadActivityForm() {
+    const main = document.querySelector('.console-main');
+    if (!main) return;
+    main.addEventListener('submit', async (event) => {
+      const form = event.target.closest('[data-lead-activity-form]');
+      if (!form) return;
+      event.preventDefault();
+      const publicID = form.dataset.leadId;
+      const status = form.querySelector('[data-lead-activity-status]');
+      const data = new FormData(form);
+      const note = String(data.get('note') || '').trim();
+      const nextStep = String(data.get('next_step') || '').trim();
+      if (!note && !nextStep) {
+        if (status) status.textContent = 'Add a follow-up note or next step.';
+        return;
+      }
+      if (publicID.startsWith('DX-')) {
+        if (status) status.textContent = 'Sample leads do not persist activity.';
+        return;
+      }
+      if (status) status.textContent = 'Saving follow-up...';
+      try {
+        await createLeadActivity(publicID, {
+          action: 'follow_up',
+          note,
+          next_step: nextStep,
+        });
+        form.reset();
+        if (status) status.textContent = 'Follow-up saved.';
+        const lead = allLeadItems.find((item) => leadID(item) === publicID);
+        renderLeadDetail(lead);
+      } catch (error) {
+        if (status) status.textContent = error.message;
       }
     });
   }
@@ -1136,6 +1234,7 @@
   setupLeadForm();
   setupSampleLeads();
   setupLeadStatusActions();
+  setupLeadActivityForm();
   setupLeadFilters();
   setupAdminLoginForm();
   setupAdminTokenForm();
