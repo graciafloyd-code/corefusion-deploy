@@ -434,8 +434,8 @@
 }
 
 .lead-row {
-  grid-template-columns: .75fr 1.2fr 1.25fr .85fr .8fr 1fr;
-  min-width: 880px;
+  grid-template-columns: .75fr 1.12fr 1.18fr .75fr .72fr .9fr 1.16fr;
+  min-width: 1080px;
 }
 
 .ops-row {
@@ -487,6 +487,40 @@
   background: #e0f2fe;
   border-radius: 999px;
   font-weight: 900;
+}
+
+.lead-status-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lead-status-control select {
+  min-width: 116px;
+  height: 34px;
+  padding: 0 9px;
+  color: var(--console-ink);
+  background: #fff;
+  border: 1px solid var(--console-border);
+  border-radius: 9px;
+  font: 800 12px/1 Manrope, 'Noto Sans SC', sans-serif;
+}
+
+.lead-status-control button {
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--console-primary);
+  color: #fff;
+  font-weight: 900;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lead-status-control button:disabled {
+  cursor: not-allowed;
+  opacity: .68;
 }
 
 .empty-state {
