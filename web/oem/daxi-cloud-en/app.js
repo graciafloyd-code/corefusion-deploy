@@ -27,7 +27,7 @@
     },
   };
 
-  const leadStatuses = ['New', 'Contacted', 'Qualified', 'Converted', 'Closed'];
+  const leadStatuses = ['New', 'Contacted', 'Quoting', 'PoC', 'Won', 'Closed'];
   let allLeadItems = [];
   let currentLeadItems = [];
   const leadFilters = {
@@ -55,7 +55,7 @@
       usage_profile: 'Campaign production',
       budget: 'Monthly subscription',
       email: 'growth@example.com',
-      status: 'Reviewing',
+      status: 'Contacted',
       created_at: '2026-06-09 16:05',
     },
     {
