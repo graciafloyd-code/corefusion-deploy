@@ -24,6 +24,18 @@ type Usage struct {
 	TotalTokens      int64
 }
 
+type ModelItem struct {
+	ID      string         `json:"id"`
+	Object  string         `json:"object,omitempty"`
+	OwnedBy string         `json:"owned_by,omitempty"`
+	Extra   map[string]any `json:"-"`
+}
+
+type ModelList struct {
+	Object string      `json:"object"`
+	Data   []ModelItem `json:"data"`
+}
+
 type Identity struct {
 	CustomerPublicID string
 	APIKeyPublicID   string
@@ -85,6 +97,49 @@ func (c *Client) ProxyChat(ctx context.Context, body []byte, identity Identity, 
 		return nil, requestID, err
 	}
 	return resp, requestID, nil
+}
+
+func (c *Client) ListModels(ctx context.Context) (ModelList, error) {
+	url := c.cfg.UpstreamBaseURL + "/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ModelList{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.UpstreamAPIKey)
+	req.Header.Set("X-Reseller-Code", c.cfg.ResellerCode)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return ModelList{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ModelList{}, fmt.Errorf("upstream models returned %s", resp.Status)
+	}
+
+	var payload struct {
+		Object string           `json:"object"`
+		Data   []map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return ModelList{}, err
+	}
+	out := ModelList{Object: defaultString(payload.Object, "list")}
+	for _, raw := range payload.Data {
+		id, _ := raw["id"].(string)
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		item := ModelItem{ID: id}
+		if object, _ := raw["object"].(string); object != "" {
+			item.Object = object
+		}
+		if ownedBy, _ := raw["owned_by"].(string); ownedBy != "" {
+			item.OwnedBy = ownedBy
+		}
+		out.Data = append(out.Data, item)
+	}
+	return out, nil
 }
 
 // ParseUsage extracts token usage from a non-streaming JSON chat completion body.

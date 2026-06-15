@@ -47,7 +47,8 @@ DAXI_UPSTREAM_BASE_URL=https://supchuang.com/v1
 DAXI_UPSTREAM_API_KEY=
 DAXI_RESELLER_CODE=daxi-cloud
 DAXI_EMERGENCY_DISABLED=false
-DAXI_ALLOWED_MODELS=daxi-smart-router,gpt-4o,claude-sonnet,doubao-seedance,deepseek-chat,qwen-plus
+DAXI_ALLOWED_MODELS=deepseek-v4-flash,deepseek-v4-pro,qwen3.6-plus,gpt-5.4-nano,gpt-5.4-pro,gpt-5.5,gpt-5.5-pro,glm-5.1,gemini-3.5-flash,gemini-3.1-pro-preview,claude-opus-4-7,claude-opus-4-8,minimax-m2.7
+DAXI_DEFAULT_PROXY_MODEL=deepseek-v4-flash
 DAXI_REQUEST_TIMEOUT_SECONDS=120
 DAXI_MAX_BODY_BYTES=1048576
 ```
@@ -133,7 +134,7 @@ The second-phase console flow supports:
 - Manual recharge ledger with balance update.
 - Customer detail summary with keys, usage, and recharge history.
 - Recent model proxy usage records for settlement review.
-- Scenario model-route table. If a customer request omits `model`, the backend uses that scenario's primary model. If the request names a model outside the scenario route or global allowlist, it is rejected before reaching the upstream platform. When a route sets `max_tokens_per_request > 0`, requests whose `max_tokens` / `max_completion_tokens` exceed it are rejected with `400` before reaching the upstream.
+- Scenario model-route table. If a customer request omits `model`, the backend uses that scenario's primary model. If the request names a model that is not present in the Supchuang upstream model list or is outside the scenario route, it is rejected before reaching the upstream platform. When a route sets `max_tokens_per_request > 0`, requests whose `max_tokens` / `max_completion_tokens` exceed it are rejected with `400` before reaching the upstream.
 - Unknown scenarios explicitly fall back to the `model-api` route. Real route database errors return `500`; unknown scenario names no longer bypass route controls.
 - Individual API key revocation. `PATCH /admin/api-keys/{public_id}/status` with `{"status":"Disabled"}` blocks that single key (proxy returns `401`) without affecting the customer's other keys.
 - Video task queue with status, progress, result URL, and error message fields.
@@ -154,6 +155,12 @@ POST /v1/chat/completions
 ```
 
 Both endpoints require a valid, active DAXI customer API key (`Authorization: Bearer <key>`).
+
+`GET /v1/models` inherits the available model list from the configured Supchuang
+upstream (`DAXI_UPSTREAM_BASE_URL`, normally `https://supchuang.com/v1`) using
+the dedicated `DAXI_UPSTREAM_API_KEY`. DAXI should not maintain a separate public
+model catalogue; when Supchuang opens or removes models for the DAXI upstream
+key, DAXI customers see the same list.
 
 For streaming requests (`"stream": true`), the proxy injects
 `stream_options.include_usage=true` before forwarding so the upstream emits a
@@ -176,7 +183,17 @@ This keeps final model supply, upstream quota, emergency stop, and token settlem
 
 ### Token settlement behavior
 
-The first-phase proxy uses postpaid settlement for model calls:
+The first-phase proxy has two settlement layers:
+
+1. DAXI customer balance: DAXI deducts the downstream customer's local
+   `balance_tokens` from the usage returned by Supchuang.
+2. Supchuang reseller settlement: Supchuang bills the dedicated DAXI upstream
+   key according to the reseller group / wholesale multiplier configured on
+   Supchuang. DAXI sends `X-Reseller-Code`, customer ID, key ID, scenario, and
+   request ID on every upstream call so Supchuang can attribute consumption and
+   generate reseller settlement reports.
+
+The DAXI local proxy uses postpaid settlement for customer model calls:
 
 - Requests are allowed only when the DAXI customer balance is greater than zero.
 - After the upstream response reports actual usage, the backend deducts the reported `total_tokens`.

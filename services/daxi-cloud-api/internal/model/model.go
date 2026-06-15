@@ -154,6 +154,8 @@ type UpstreamStatus struct {
 	HasAPIKey         bool     `json:"has_api_key"`
 	EmergencyDisabled bool     `json:"emergency_disabled"`
 	AllowedModels     []string `json:"allowed_models"`
+	ModelSource       string   `json:"model_source"`
+	ModelSyncError    string   `json:"model_sync_error,omitempty"`
 }
 
 type AdminUser struct {

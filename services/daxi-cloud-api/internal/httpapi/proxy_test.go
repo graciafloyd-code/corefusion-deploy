@@ -32,12 +32,18 @@ func newTestServer(t *testing.T, transport http.RoundTripper) (*Server, *db.Stor
 		UpstreamBaseURL:   "https://upstream.test/v1",
 		UpstreamAPIKey:    "upstream-secret",
 		ResellerCode:      "daxi-cloud",
-		AllowedModels:     []string{"daxi-smart-router"},
-		DefaultProxyModel: "daxi-smart-router",
+		AllowedModels:     []string{"deepseek-v4-flash"},
+		DefaultProxyModel: "deepseek-v4-flash",
 		MaxBodyBytes:      1 << 20,
 		AdminToken:        "test-admin",
 	}
-	return NewServer(cfg, store, upstream.NewClientWithTransport(cfg, transport)), store
+	wrappedTransport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/models") {
+			return modelListResponse(cfg.AllowedModels...), nil
+		}
+		return transport.RoundTrip(r)
+	})
+	return NewServer(cfg, store, upstream.NewClientWithTransport(cfg, wrappedTransport)), store
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -53,6 +59,14 @@ func mockResponse(contentType, body string) *http.Response {
 		Header:     http.Header{"Content-Type": []string{contentType}},
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
+}
+
+func modelListResponse(models ...string) *http.Response {
+	items := make([]string, 0, len(models))
+	for _, model := range models {
+		items = append(items, `{"id":"`+model+`","object":"model","owned_by":"supchuang"}`)
+	}
+	return mockResponse("application/json", `{"object":"list","data":[`+strings.Join(items, ",")+`]}`)
 }
 
 func jsonUsageTransport(t *testing.T) http.RoundTripper {
@@ -91,7 +105,7 @@ func TestProxyNonStreamingDeductsBalance(t *testing.T) {
 	raw := seedCustomerKey(t, store, 1000)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"daxi-smart-router","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash","messages":[]}`))
 	req.Header.Set("Authorization", "Bearer "+raw)
 	srv.Router().ServeHTTP(rec, req)
 
@@ -101,6 +115,56 @@ func TestProxyNonStreamingDeductsBalance(t *testing.T) {
 	bal := currentBalance(t, store, raw)
 	if bal != 1000-12 {
 		t.Fatalf("balance = %d, want %d", bal, 1000-12)
+	}
+}
+
+func TestModelsInheritFromUpstreamModelList(t *testing.T) {
+	cfg := config.Config{
+		UpstreamBaseURL:   "https://upstream.test/v1",
+		UpstreamAPIKey:    "upstream-secret",
+		ResellerCode:      "daxi-cloud",
+		AllowedModels:     []string{"legacy-static-model"},
+		DefaultProxyModel: "supchuang-live-model",
+		MaxBodyBytes:      1 << 20,
+		AdminToken:        "test-admin",
+	}
+	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := store.UpsertModelRoute(&model.ModelRoute{Scenario: "model-api", PrimaryModel: "supchuang-live-model", Status: "Active"}); err != nil {
+		t.Fatalf("upsert model route: %v", err)
+	}
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/models") {
+			return modelListResponse("supchuang-live-model", "another-upstream-model"), nil
+		}
+		return mockResponse("application/json", `{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`), nil
+	})
+	srv := NewServer(cfg, store, upstream.NewClientWithTransport(cfg, transport))
+	raw := seedCustomerKey(t, store, 1000)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("models status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "supchuang-live-model") || strings.Contains(rec.Body.String(), "legacy-static-model") {
+		t.Fatalf("models response did not inherit upstream list: %s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"supchuang-live-model","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chat with upstream model status = %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -123,7 +187,7 @@ func TestProxyStreamingDeductsBalanceAndInjectsUsage(t *testing.T) {
 	raw := seedCustomerKey(t, store, 1000)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"daxi-smart-router","stream":true,"messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash","stream":true,"messages":[]}`))
 	req.Header.Set("Authorization", "Bearer "+raw)
 	srv.Router().ServeHTTP(rec, req)
 
@@ -164,7 +228,7 @@ func TestAPIKeyRevocationBlocksProxy(t *testing.T) {
 
 	call := func() int {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"daxi-smart-router"}`))
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash"}`))
 		req.Header.Set("Authorization", "Bearer "+raw)
 		srv.Router().ServeHTTP(rec, req)
 		return rec.Code
@@ -193,7 +257,7 @@ func TestMaxTokensPerScenarioEnforced(t *testing.T) {
 
 	// Seeded model-api route caps max_tokens at 32000.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"daxi-smart-router","max_tokens":40000}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash","max_tokens":40000}`))
 	req.Header.Set("Authorization", "Bearer "+raw)
 	srv.Router().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -201,7 +265,7 @@ func TestMaxTokensPerScenarioEnforced(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"daxi-smart-router","max_tokens":1000}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash","max_tokens":1000}`))
 	req.Header.Set("Authorization", "Bearer "+raw)
 	srv.Router().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -239,7 +303,7 @@ func TestProxyStreamingNoFreeRideWhenUpstreamOmitsUsage(t *testing.T) {
 	raw := seedCustomerKey(t, store, 1000)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"daxi-smart-router","stream":true,"messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash","stream":true,"messages":[]}`))
 	req.Header.Set("Authorization", "Bearer "+raw)
 	srv.Router().ServeHTTP(rec, req)
 
@@ -266,7 +330,7 @@ func TestStreamingFloorsBalanceAndRecordsOverspend(t *testing.T) {
 	raw := seedCustomerKey(t, store, 10)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"daxi-smart-router","stream":true,"messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash","stream":true,"messages":[]}`))
 	req.Header.Set("Authorization", "Bearer "+raw)
 	srv.Router().ServeHTTP(rec, req)
 
@@ -282,5 +346,148 @@ func TestStreamingFloorsBalanceAndRecordsOverspend(t *testing.T) {
 	}
 	if records[0].OverspendTokens != 20 {
 		t.Fatalf("overspend = %d, want 20", records[0].OverspendTokens)
+	}
+}
+
+func TestFirstPhaseEndToEndFlow(t *testing.T) {
+	var upstreamCustomerID string
+	var upstreamKeyID string
+	var upstreamScenario string
+	var upstreamAuth string
+	srv, store := newTestServer(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCustomerID = r.Header.Get("X-Reseller-Customer-ID")
+		upstreamKeyID = r.Header.Get("X-Reseller-Key-ID")
+		upstreamScenario = r.Header.Get("X-Reseller-Scenario")
+		upstreamAuth = r.Header.Get("Authorization")
+		return mockResponse("application/json", `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":50,"completion_tokens":73,"total_tokens":123}}`), nil
+	}))
+
+	rec := doJSON(t, srv, http.MethodPost, "/public/leads", "", `{"company":"DAXI Client","email":"ops@example.com","notes":"OEM launch"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create lead status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, srv, http.MethodPost, "/admin/sessions", "", `{"admin_token":"test-admin"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("admin session status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var session struct {
+		SessionToken string `json:"session_token"`
+	}
+	decodeBody(t, rec, &session)
+	adminAuth := "Bearer " + session.SessionToken
+
+	rec = doJSON(t, srv, http.MethodPost, "/admin/customers", adminAuth, `{"company":"DAXI Client","email":"buyer@example.com"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create customer status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var customer model.Customer
+	decodeBody(t, rec, &customer)
+
+	rec = doJSON(t, srv, http.MethodPost, "/admin/token-orders", adminAuth, `{"customer_public_id":"`+customer.PublicID+`","plan_public_id":"DXP-TRIAL","notes":"first phase pack"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create token order status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var order model.TokenOrder
+	decodeBody(t, rec, &order)
+
+	rec = doJSON(t, srv, http.MethodPost, "/admin/payments", adminAuth, `{"order_public_id":"`+order.PublicID+`","customer_public_id":"`+customer.PublicID+`","provider":"manual","amount_cents":9900,"currency":"USD","status":"Pending"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create payment status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payment model.PaymentRecord
+	decodeBody(t, rec, &payment)
+
+	rec = doJSON(t, srv, http.MethodPatch, "/admin/payments/"+payment.PublicID+"/status", adminAuth, `{"status":"Paid"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settle payment status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var settlement struct {
+		Payment  model.PaymentRecord  `json:"payment"`
+		Recharge *model.TokenRecharge `json:"recharge"`
+	}
+	decodeBody(t, rec, &settlement)
+	if settlement.Recharge == nil || settlement.Recharge.Tokens != order.Tokens {
+		t.Fatalf("recharge = %+v, want %d tokens", settlement.Recharge, order.Tokens)
+	}
+
+	rec = doJSON(t, srv, http.MethodPost, "/admin/api-keys", adminAuth, `{"customer_public_id":"`+customer.PublicID+`","name":"Production key"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create api key status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var keyResp struct {
+		APIKey model.APIKey `json:"api_key"`
+		Secret string       `json:"secret"`
+	}
+	decodeBody(t, rec, &keyResp)
+	customerAuth := "Bearer " + keyResp.Secret
+
+	rec = doJSON(t, srv, http.MethodGet, "/v1/models", customerAuth, ``)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("models status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, srv, http.MethodPost, "/v1/chat/completions", customerAuth, `{"messages":[{"role":"user","content":"hello"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chat status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if upstreamAuth != "Bearer upstream-secret" {
+		t.Fatalf("upstream auth = %q", upstreamAuth)
+	}
+	if upstreamCustomerID != customer.PublicID {
+		t.Fatalf("upstream customer id = %q, want %q", upstreamCustomerID, customer.PublicID)
+	}
+	if upstreamKeyID != keyResp.APIKey.PublicID {
+		t.Fatalf("upstream key id = %q, want %q", upstreamKeyID, keyResp.APIKey.PublicID)
+	}
+	if upstreamScenario != "model-api" {
+		t.Fatalf("upstream scenario = %q, want model-api", upstreamScenario)
+	}
+
+	storedCustomer, err := store.GetCustomer(customer.PublicID)
+	if err != nil {
+		t.Fatalf("get customer: %v", err)
+	}
+	if storedCustomer.Balance != order.Tokens-123 {
+		t.Fatalf("balance = %d, want %d", storedCustomer.Balance, order.Tokens-123)
+	}
+
+	rec = doJSON(t, srv, http.MethodGet, "/admin/usage", adminAuth, ``)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("usage status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var usage model.UsageSummary
+	decodeBody(t, rec, &usage)
+	if usage.TotalTokens != 123 || usage.RequestCount != 1 {
+		t.Fatalf("usage = %+v, want one 123-token request", usage)
+	}
+}
+
+func doJSON(t *testing.T, srv *Server, method, path, auth, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	if path == "/v1/chat/completions" {
+		req.Header.Set("X-DAXI-Scenario", "unknown-scenario")
+	}
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	return rec
+}
+
+func decodeBody(t *testing.T, rec *httptest.ResponseRecorder, target any) {
+	t.Helper()
+	if err := json.Unmarshal(rec.Body.Bytes(), target); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
 	}
 }

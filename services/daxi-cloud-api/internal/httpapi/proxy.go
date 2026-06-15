@@ -25,12 +25,21 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid or inactive DAXI customer API key")
 		return
 	}
-
-	items := make([]map[string]any, 0, len(s.cfg.AllowedModels))
-	for _, name := range s.cfg.AllowedModels {
-		items = append(items, map[string]any{"id": name, "object": "model", "owned_by": "daxi-cloud"})
+	if s.cfg.EmergencyDisabled {
+		writeError(w, http.StatusServiceUnavailable, "DAXI upstream is temporarily disabled")
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": items})
+	if strings.TrimSpace(s.cfg.UpstreamAPIKey) == "" {
+		writeError(w, http.StatusServiceUnavailable, "upstream API key is not configured")
+		return
+	}
+
+	models, err := s.upstream.ListModels(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, models)
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +118,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		payload["model"] = modelName
 		modified = true
 	}
-	if !s.modelAllowedForScenario(modelName, route, routeErr == nil) {
+	upstreamModels, err := s.upstream.ListModels(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !modelListedUpstream(modelName, upstreamModels) || !modelAllowedForScenario(modelName, route, routeErr == nil) {
 		writeError(w, http.StatusForbidden, "model is not allowed for this DAXI scenario")
 		return
 	}
@@ -220,18 +234,20 @@ func streamAndCapture(w http.ResponseWriter, body io.Reader) upstream.Usage {
 	return usage
 }
 
-func (s *Server) modelAllowedForScenario(modelName string, route model.ModelRoute, hasRoute bool) bool {
+func modelListedUpstream(modelName string, models upstream.ModelList) bool {
 	if modelName == "" {
 		return false
 	}
-	globalAllowed := false
-	for _, allowed := range s.cfg.AllowedModels {
-		if allowed == modelName {
-			globalAllowed = true
-			break
+	for _, item := range models.Data {
+		if item.ID == modelName {
+			return true
 		}
 	}
-	if !globalAllowed {
+	return false
+}
+
+func modelAllowedForScenario(modelName string, route model.ModelRoute, hasRoute bool) bool {
+	if modelName == "" {
 		return false
 	}
 	if !hasRoute {

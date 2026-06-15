@@ -819,7 +819,16 @@ func (s *Server) handlePatchPayment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpstreamStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.upstreamStatus())
+	status := s.upstreamStatus()
+	if strings.TrimSpace(s.cfg.UpstreamAPIKey) != "" && !s.cfg.EmergencyDisabled {
+		models, err := s.upstream.ListModels(r.Context())
+		if err != nil {
+			status.ModelSyncError = err.Error()
+		} else {
+			status.AllowedModels = modelIDs(models)
+		}
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) upstreamStatus() model.UpstreamStatus {
@@ -829,7 +838,18 @@ func (s *Server) upstreamStatus() model.UpstreamStatus {
 		HasAPIKey:         strings.TrimSpace(s.cfg.UpstreamAPIKey) != "",
 		EmergencyDisabled: s.cfg.EmergencyDisabled,
 		AllowedModels:     s.cfg.AllowedModels,
+		ModelSource:       "supchuang-upstream",
 	}
+}
+
+func modelIDs(models upstream.ModelList) []string {
+	out := make([]string, 0, len(models.Data))
+	for _, item := range models.Data {
+		if strings.TrimSpace(item.ID) != "" {
+			out = append(out, item.ID)
+		}
+	}
+	return out
 }
 
 func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
