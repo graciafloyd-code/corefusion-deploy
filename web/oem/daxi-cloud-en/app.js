@@ -28,6 +28,7 @@
   };
 
   const leadStatuses = ['New', 'Contacted', 'Qualified', 'Converted', 'Closed'];
+  let currentLeadItems = [];
 
   const sampleLeads = [
     {
@@ -283,6 +284,7 @@
   function renderLeadTableFromItems(items) {
     const table = document.querySelector('[data-lead-table]');
     if (!table) return;
+    currentLeadItems = items;
 
     if (!items.length) {
       table.innerHTML = `
@@ -296,14 +298,14 @@
 
     table.innerHTML = `
       <div class="lead-row lead-row-head">
-        <span>ID</span><span>Scenario</span><span>Company</span><span>Country</span><span>Status</span><span>Created</span><span>Action</span>
+        <span>ID</span><span>Scenario</span><span>Company</span><span>Contact</span><span>Status</span><span>Created</span><span>Action</span>
       </div>
       ${items.map((lead) => `
         <div class="lead-row" data-lead-id="${leadID(lead)}">
           <span>${leadID(lead)}</span>
           <span>${lead.scenario || '-'}</span>
           <span>${lead.company || '-'}</span>
-          <span>${lead.country || '-'}</span>
+          <span>${lead.email || lead.phone || '-'}</span>
           <span><mark>${lead.status || 'New'}</mark></span>
           <span>${formatDate(lead.created_at || lead.createdAt)}</span>
           <span class="lead-status-control">
@@ -311,9 +313,54 @@
               ${leadStatuses.map((status) => `<option value="${status}" ${status === (lead.status || 'New') ? 'selected' : ''}>${status}</option>`).join('')}
             </select>
             <button type="button" data-lead-status-save>Update</button>
+            <button type="button" class="button-secondary" data-lead-detail-open>Details</button>
           </span>
         </div>
       `).join('')}
+    `;
+  }
+
+  function renderLeadDetail(lead) {
+    const panel = document.querySelector('[data-lead-detail]');
+    if (!panel) return;
+    if (!lead) {
+      panel.innerHTML = `
+        <div class="empty-state">
+          <strong>Select a lead to review details.</strong>
+          <span>Contact information, scenario notes, and handoff guidance will appear here.</span>
+        </div>
+      `;
+      return;
+    }
+    const publicID = leadID(lead);
+    const contact = [lead.contact_name, lead.email, lead.phone].filter(Boolean).join(' / ') || '-';
+    panel.innerHTML = `
+      <div class="lead-detail-card">
+        <div class="lead-detail-head">
+          <div>
+            <p class="eyebrow">LEAD DETAIL</p>
+            <h3>${lead.company || 'Unqualified Lead'}</h3>
+            <span>${publicID} · ${lead.scenario || 'Scenario pending'}</span>
+          </div>
+          <mark>${lead.status || 'New'}</mark>
+        </div>
+        <div class="lead-detail-grid">
+          <div><span>Contact</span><strong>${contact}</strong></div>
+          <div><span>Country</span><strong>${lead.country || '-'}</strong></div>
+          <div><span>Usage Profile</span><strong>${lead.usage_profile || '-'}</strong></div>
+          <div><span>Budget / Package</span><strong>${lead.budget || '-'}</strong></div>
+          <div><span>Source</span><strong>${lead.source || 'public form'}</strong></div>
+          <div><span>Created</span><strong>${formatDate(lead.created_at || lead.createdAt)}</strong></div>
+        </div>
+        <div class="lead-detail-notes">
+          <span>Notes</span>
+          <p>${lead.notes || 'No additional notes provided.'}</p>
+        </div>
+        <div class="lead-handoff">
+          <strong>Recommended handoff</strong>
+          <span>Confirm contact and usage scope, then send the qualified lead to platform operations for customer record, API key, token package, and recharge setup.</span>
+        </div>
+      </div>
     `;
   }
 
@@ -612,6 +659,14 @@
     const table = document.querySelector('[data-lead-table]');
     if (!table) return;
     table.addEventListener('click', async (event) => {
+      const detailButton = event.target.closest('[data-lead-detail-open]');
+      if (detailButton) {
+        const row = detailButton.closest('[data-lead-id]');
+        const lead = currentLeadItems.find((item) => leadID(item) === row?.dataset.leadId);
+        renderLeadDetail(lead);
+        return;
+      }
+
       const button = event.target.closest('[data-lead-status-save]');
       if (!button) return;
       const row = button.closest('[data-lead-id]');
