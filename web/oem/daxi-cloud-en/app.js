@@ -1,7 +1,7 @@
 (function () {
   const storageKey = 'daxi-cloud-leads-v1';
   const adminTokenKey = 'daxi-cloud-admin-token';
-  const defaultApiBase = window.location.protocol.startsWith('http') ? window.location.origin : 'http://127.0.0.1:8088';
+  const defaultApiBase = window.location.protocol.startsWith('http') ? window.location.origin : 'https://daxicloud.com';
   const apiBase = (window.DAXI_API_BASE || defaultApiBase).replace(/\/$/, '');
 
   const scenarioPaths = {
@@ -95,11 +95,16 @@
   }
 
   function adminToken() {
-    return localStorage.getItem(adminTokenKey) || 'dev-admin-token';
+    return localStorage.getItem(adminTokenKey) || '';
   }
 
   function setAdminToken(value) {
-    localStorage.setItem(adminTokenKey, value || 'dev-admin-token');
+    const token = String(value || '').trim();
+    if (token) {
+      localStorage.setItem(adminTokenKey, token);
+    } else {
+      localStorage.removeItem(adminTokenKey);
+    }
   }
 
   function leadID(lead) {
@@ -132,7 +137,8 @@
       ...(options.headers || {}),
     };
     if (options.admin) {
-      headers.Authorization = `Bearer ${adminToken()}`;
+      const token = adminToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
     }
     const response = await fetch(`${apiBase}${path}`, {
       ...options,
@@ -800,7 +806,11 @@
       renderPaymentTable([]);
       renderAdminUserTable([]);
       const status = document.querySelector('[data-console-status]');
-      if (status) status.textContent = `Backend unavailable: ${error.message}. Showing local drafts.`;
+      if (status) {
+        status.textContent = error.message.includes('admin token required')
+          ? 'Please sign in to load live operations data.'
+          : `Backend unavailable: ${error.message}. Showing local drafts.`;
+      }
     }
   }
 
