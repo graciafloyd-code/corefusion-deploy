@@ -156,6 +156,23 @@
     }[char]));
   }
 
+  function csvCell(value) {
+    const text = String(value ?? '').replace(/\r?\n/g, ' ').trim();
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+
+  function downloadTextFile(filename, content, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   async function submitPublicLead(path, payload, fallbackStatus) {
     try {
       const saved = await apiJSON(path, {
@@ -367,6 +384,47 @@
       const matchesQuery = !query || haystack.includes(query);
       return matchesStatus && matchesQuery;
     });
+  }
+
+  function exportVisibleLeads() {
+    const items = currentLeadItems.length ? currentLeadItems : filterLeadItems(allLeadItems);
+    if (!items.length) {
+      window.alert('No leads to export.');
+      return;
+    }
+    const headers = [
+      'Lead ID',
+      'Status',
+      'Scenario',
+      'Company',
+      'Country',
+      'Contact Name',
+      'Email',
+      'Phone',
+      'Usage Profile',
+      'Budget',
+      'Source',
+      'Notes',
+      'Created At',
+    ];
+    const rows = items.map((lead) => [
+      leadID(lead),
+      lead.status || 'New',
+      lead.scenario || '',
+      lead.company || '',
+      lead.country || '',
+      lead.contact_name || '',
+      lead.email || '',
+      lead.phone || '',
+      lead.usage_profile || '',
+      lead.budget || '',
+      lead.source || '',
+      lead.notes || '',
+      formatDate(lead.created_at || lead.createdAt),
+    ]);
+    const csv = [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\n');
+    const date = new Date().toISOString().slice(0, 10);
+    downloadTextFile(`daxi-leads-${date}.csv`, `\uFEFF${csv}`, 'text/csv;charset=utf-8');
   }
 
   async function fetchLeadActivities(publicID) {
@@ -852,6 +910,12 @@
     }
   }
 
+  function setupLeadExport() {
+    const button = document.querySelector('[data-export-leads]');
+    if (!button) return;
+    button.addEventListener('click', exportVisibleLeads);
+  }
+
   function setupAdminTokenForm() {
     const form = document.querySelector('[data-admin-token-form]');
     if (!form) return;
@@ -1236,6 +1300,7 @@
   setupLeadStatusActions();
   setupLeadActivityForm();
   setupLeadFilters();
+  setupLeadExport();
   setupAdminLoginForm();
   setupAdminTokenForm();
   setupCustomerForm();
