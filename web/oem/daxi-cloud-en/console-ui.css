@@ -347,6 +347,33 @@
   gap: 16px;
 }
 
+.handoff-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.handoff-grid article {
+  display: grid;
+  gap: 10px;
+  min-height: 132px;
+  padding: 18px;
+  background: linear-gradient(180deg, #fbfdff 0%, #f2f7ff 100%);
+  border: 1px solid var(--console-border);
+  border-radius: 14px;
+}
+
+.handoff-grid strong {
+  color: var(--console-ink);
+  font: 900 16px/1.2 Sora, 'Noto Sans SC', sans-serif;
+}
+
+.handoff-grid span {
+  color: var(--console-muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
 .ops-form {
   display: grid;
   gap: 12px;
@@ -631,6 +658,7 @@
   .console-workflow,
   .console-grid-2,
   .ops-tables,
+  .handoff-grid,
   .detail-grid {
     grid-template-columns: 1fr;
   }
