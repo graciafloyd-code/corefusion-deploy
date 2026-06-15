@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Operations Hub | DAXI Cloud</title>
+    <link rel="stylesheet" href="./styles.css?v=20260614-visualfix2" />
+    <link rel="stylesheet" href="./console-ui.css?v=20260615-p0" />
+  </head>
+  <body class="console-body console-v2">
+    <header class="console-topbar">
+      <a class="console-brand" href="./index.html">
+        <img src="./assets/daxi-dx-mark.jpg" alt="DAXI Cloud logo" />
+        <span><strong>DAXI Cloud</strong><small>Operations Hub</small></span>
+      </a>
+      <nav class="console-topnav">
+        <a href="./index.html">Website</a>
+        <a href="./get-started.html">Get Started</a>
+        <a href="./model-api.html#quickstart">API Docs</a>
+      </nav>
+      <div class="console-status-pill" data-console-status>Connecting to backend...</div>
+    </header>
+
+    <main class="console-shell">
+      <aside class="console-sidebar">
+        <strong>DAXI Admin</strong>
+        <a href="#dashboard" class="active">Dashboard</a>
+        <a href="#leads">Leads</a>
+        <a href="#onboarding">Customers</a>
+        <a href="#keys">API Keys</a>
+        <a href="#billing">Token & Billing</a>
+        <a href="#usage">Usage</a>
+        <a href="#settings">Settings</a>
+      </aside>
+
+      <section class="console-main">
+        <section class="console-hero" id="dashboard">
+          <div>
+            <p class="eyebrow">FIRST-PHASE OPERATIONS</p>
+            <h1>Manual customer onboarding for DAXI Cloud resellers.</h1>
+            <p>Customer registration is collected as leads. Operations creates customer accounts, issues API keys, and posts token recharges manually.</p>
+          </div>
+          <div class="console-login-card">
+            <h2>Admin sign in</h2>
+            <form class="ops-form token-form console-login-form" data-admin-login-form>
+              <label>Username<input name="username" required placeholder="daxi" /></label>
+              <label>Password<input name="password" type="password" required placeholder="Temporary password" /></label>
+              <button type="submit">Sign In</button>
+              <p class="form-status" data-admin-login-status></p>
+            </form>
+            <details class="console-advanced">
+              <summary>Advanced connection</summary>
+              <form class="ops-form token-form console-token-form" data-admin-token-form>
+                <label>Admin token<input name="token" placeholder="Session token" /></label>
+                <button type="submit">Connect</button>
+              </form>
+            </details>
+          </div>
+        </section>
+
+        <section class="console-kpis" aria-label="Operations overview">
+          <div><span>New Leads</span><strong data-lead-count>0</strong><small>Get Started submissions</small></div>
+          <div><span>Customers</span><strong data-customer-count>0</strong><small>Manually onboarded</small></div>
+          <div><span>API Keys</span><strong data-api-key-count>0</strong><small>Downstream access</small></div>
+          <div><span>Total Tokens</span><strong data-usage-total>0</strong><small>Tracked usage</small></div>
+          <div><span>API Calls</span><strong data-api-call-count>0</strong><small>Proxy requests</small></div>
+          <div><span>Upstream Status</span><strong data-upstream-status>Active</strong><small>Main platform control</small></div>
+          <div><span>Video Tasks</span><strong data-video-task-count>-</strong><small>Scenario queue</small></div>
+          <div><span>Control Mode</span><strong>Manual</strong><small>P0 delivery scope</small></div>
+        </section>
+
+        <section class="console-workflow">
+          <article><b>01</b><strong>Lead received</strong><span>Customer submits Get Started form.</span></article>
+          <article><b>02</b><strong>Ops qualifies</strong><span>Review scenario, volume, and contact details.</span></article>
+          <article><b>03</b><strong>Create customer</strong><span>Open downstream customer record.</span></article>
+          <article><b>04</b><strong>Issue API key</strong><span>Create scoped key and deliver manually.</span></article>
+          <article><b>05</b><strong>Recharge token</strong><span>Post prepaid balance after payment.</span></article>
+        </section>
+
+        <section class="console-panel" id="leads">
+          <div class="console-panel-head">
+            <div>
+              <p class="eyebrow">LEADS CRM</p>
+              <h2>Customer registration intake</h2>
+              <p>All public Get Started submissions land here for manual follow-up.</p>
+            </div>
+            <button type="button" data-seed-leads>Load sample leads</button>
+          </div>
+          <div class="lead-table" data-lead-table></div>
+        </section>
+
+        <section class="console-grid-2" id="onboarding">
+          <div class="console-panel">
+            <div class="console-panel-head compact">
+              <div>
+                <p class="eyebrow">CUSTOMERS</p>
+                <h2>Create customer</h2>
+              </div>
+            </div>
+            <form class="ops-form" data-customer-form>
+              <label>Company<input name="company" required placeholder="ASEAN Media Studio" /></label>
+              <label>Country<input name="country" placeholder="Malaysia" /></label>
+              <label>Email<input name="email" type="email" placeholder="ops@example.com" /></label>
+              <label>Opening token balance<input name="balance" type="number" min="0" value="100000" /></label>
+              <button type="submit">Create Customer</button>
+              <p class="form-status" data-customer-status></p>
+            </form>
+          </div>
+
+          <div class="console-panel" id="keys">
+            <div class="console-panel-head compact">
+              <div>
+                <p class="eyebrow">API KEYS</p>
+                <h2>Issue downstream key</h2>
+              </div>
+            </div>
+            <form class="ops-form" data-api-key-form>
+              <label>Customer<select name="customer_public_id" required data-api-key-customer></select></label>
+              <label>Key name<input name="name" required placeholder="Production API Key" /></label>
+              <label>Scopes<input name="scopes" placeholder="model-api,short-drama,ecommerce-video" /></label>
+              <button type="submit">Issue Key</button>
+              <p class="form-status" data-api-key-status></p>
+            </form>
+          </div>
+        </section>
+
+        <section class="console-panel">
+          <div class="console-panel-head">
+            <div>
+              <p class="eyebrow">CUSTOMER LEDGER</p>
+              <h2>Customers and issued keys</h2>
+            </div>
+          </div>
+          <div class="ops-tables">
+            <div class="ops-table" data-customer-table></div>
+            <div class="ops-table" data-key-table></div>
+          </div>
+        </section>
+
+        <section class="console-panel">
+          <div class="console-panel-head">
+            <div>
+              <p class="eyebrow">CUSTOMER DETAIL</p>
+              <h2>Balance, keys, and usage summary</h2>
+            </div>
+            <select class="ops-select" data-customer-detail-select></select>
+          </div>
+          <div data-customer-detail></div>
+        </section>
+
+        <section class="console-grid-2" id="billing">
+          <div class="console-panel">
+            <div class="console-panel-head compact">
+              <div>
+                <p class="eyebrow">TOKEN ORDER</p>
+                <h2>Create order</h2>
+              </div>
+            </div>
+            <form class="ops-form" data-order-form>
+              <label>Customer<select name="customer_public_id" required data-order-customer></select></label>
+              <label>Plan<select name="plan_public_id" required data-order-plan></select></label>
+              <label>Notes<input name="notes" placeholder="Contract, invoice, or sales note" /></label>
+              <button type="submit">Create Order</button>
+              <p class="form-status" data-order-status></p>
+            </form>
+          </div>
+
+          <div class="console-panel">
+            <div class="console-panel-head compact">
+              <div>
+                <p class="eyebrow">MANUAL RECHARGE</p>
+                <h2>Post token recharge</h2>
+              </div>
+            </div>
+            <form class="ops-form" data-recharge-form>
+              <label>Customer<select name="customer_public_id" required data-recharge-customer></select></label>
+              <label>Tokens<input name="tokens" type="number" min="1" required placeholder="100000" /></label>
+              <label>Reference<input name="reference_id" placeholder="Invoice or order ID" /></label>
+              <label>Notes<input name="notes" placeholder="Manual top-up reason" /></label>
+              <button type="submit">Post Recharge</button>
+              <p class="form-status" data-recharge-status></p>
+            </form>
+          </div>
+        </section>
+
+        <section class="console-panel">
+          <div class="console-panel-head">
+            <div>
+              <p class="eyebrow">BILLING RECORDS</p>
+              <h2>Orders and token recharge ledger</h2>
+            </div>
+          </div>
+          <div class="ops-tables">
+            <div class="ops-table" data-order-table></div>
+            <div class="ops-table" data-recharge-table></div>
+          </div>
+        </section>
+
+        <section class="console-panel" id="usage">
+          <div class="console-panel-head">
+            <div>
+              <p class="eyebrow">USAGE LEDGER</p>
+              <h2>Recent model proxy records</h2>
+            </div>
+          </div>
+          <div class="ops-table wide-table" data-usage-record-table></div>
+        </section>
+
+        <section class="console-panel console-settings" id="settings">
+          <div class="console-panel-head">
+            <div>
+              <p class="eyebrow">ADMIN ACCESS</p>
+              <h2>Operations users</h2>
+              <p>Create internal operator accounts. Customer self-service console is intentionally out of scope for phase one.</p>
+            </div>
+          </div>
+          <div class="console-grid-2">
+            <form class="ops-form" data-admin-user-form>
+              <label>Username<input name="username" required placeholder="daxi-ops" /></label>
+              <label>Password<input name="password" type="password" required placeholder="Temporary password" /></label>
+              <label>Role<select name="role"><option>Operator</option><option>Finance</option><option>Owner</option></select></label>
+              <button type="submit">Create Admin</button>
+              <p class="form-status" data-admin-user-status></p>
+            </form>
+            <div class="ops-table" data-admin-user-table></div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="./app.js?v=20260615-p0"></script>
+  </body>
+</html>
