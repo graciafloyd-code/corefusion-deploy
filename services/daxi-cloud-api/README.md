@@ -134,7 +134,7 @@ The second-phase console flow supports:
 - Manual recharge ledger with balance update.
 - Customer detail summary with keys, usage, and recharge history.
 - Recent model proxy usage records for settlement review.
-- Scenario model-route table. If a customer request omits `model`, the backend uses that scenario's primary model. If the request names a model that is not present in the Supchuang upstream model list or is outside the scenario route, it is rejected before reaching the upstream platform. When a route sets `max_tokens_per_request > 0`, requests whose `max_tokens` / `max_completion_tokens` exceed it are rejected with `400` before reaching the upstream.
+- Scenario model-route table. If a customer request omits `model`, the backend uses that scenario's primary model. Generic `model-api` traffic can call any model returned by the Supchuang upstream `/models` list. Dedicated scenarios such as short drama, e-commerce video, and agent workflows remain constrained by their scenario route. When a route sets `max_tokens_per_request > 0`, requests whose `max_tokens` / `max_completion_tokens` exceed it are rejected with `400` before reaching the upstream.
 - Unknown scenarios explicitly fall back to the `model-api` route. Real route database errors return `500`; unknown scenario names no longer bypass route controls.
 - Individual API key revocation. `PATCH /admin/api-keys/{public_id}/status` with `{"status":"Disabled"}` blocks that single key (proxy returns `401`) without affecting the customer's other keys.
 - Video task queue with status, progress, result URL, and error message fields.

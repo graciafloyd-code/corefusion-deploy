@@ -159,12 +159,14 @@ func TestModelsInheritFromUpstreamModelList(t *testing.T) {
 		t.Fatalf("models response did not inherit upstream list: %s", rec.Body.String())
 	}
 
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"supchuang-live-model","messages":[]}`))
-	req.Header.Set("Authorization", "Bearer "+raw)
-	srv.Router().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("chat with upstream model status = %d body=%s", rec.Code, rec.Body.String())
+	for _, modelName := range []string{"supchuang-live-model", "another-upstream-model"} {
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"`+modelName+`","messages":[]}`))
+		req.Header.Set("Authorization", "Bearer "+raw)
+		srv.Router().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("chat with upstream model %q status = %d body=%s", modelName, rec.Code, rec.Body.String())
+		}
 	}
 }
 

@@ -253,6 +253,9 @@ func modelAllowedForScenario(modelName string, route model.ModelRoute, hasRoute 
 	if !hasRoute {
 		return true
 	}
+	if route.Scenario == "model-api" {
+		return true
+	}
 	if route.PrimaryModel == modelName {
 		return true
 	}
