@@ -6,6 +6,7 @@ mysql/
 deploy/production/.env
 deploy/production/mysql-init/
 deploy/production/image/
+/production/
 github-backups/
 *.tar
 *.tar.gz
