@@ -16,7 +16,14 @@
     'bar-chart-3': '<path d="M3 3v18h18"/><path d="M7 16v-5M12 16V7M17 16v-8"/>',
     'shield-check': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/>',
     sparkles: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/><path d="M5 3v4M3 5h4M19 17v4M17 19h4"/>',
-    check: '<path d="m5 12 4 4L19 6"/>'
+    check: '<path d="m5 12 4 4L19 6"/>',
+    smartphone: '<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>',
+    play: '<polygon points="5 3 19 12 5 21 5 3"/>',
+    heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8Z"/>',
+    star: '<polygon points="12 2 15 8.5 22 9.3 16.8 14 18.2 21 12 17.4 5.8 21 7.2 14 2 9.3 9 8.5 12 2"/>',
+    'file-text': '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h8M8 9h2"/>',
+    mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/>',
+    upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5M12 3v12"/>'
   };
 
   const renderIcons = () => {
@@ -54,7 +61,7 @@
         contact_name: data.get('contact_name') || '',
         email: contact.email,
         phone: contact.phone,
-        usage_profile: 'Business / reseller onboarding',
+        usage_profile: 'Business / partner onboarding',
         notes: `Account type: business. Scenario: ${data.get('scenario') || 'Model API Access'}`,
       };
     }
@@ -100,7 +107,8 @@
     renderIcons();
   };
 
-  const initial = localStorage.getItem('daxi-lang') || 'en';
+  const queryLang = new URLSearchParams(location.search).get('lang');
+  const initial = queryLang === 'zh' || queryLang === 'en' ? queryLang : (localStorage.getItem('daxi-lang') || 'en');
   applyLang(initial);
   document.querySelectorAll('[data-lang-toggle]').forEach((btn) => {
     btn.addEventListener('click', () => applyLang((localStorage.getItem('daxi-lang') || 'en') === 'en' ? 'zh' : 'en'));

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DAXI Cloud | Platform & Token Plans</title>
+  <meta name="description" content="One API for model access, token billing, and customer-ready usage control." />
+  <link rel="stylesheet" href="./daxi-ui.css?v=20260621-site-baseline" />
+</head>
+<body class="site-page">
+
+<header class="site-nav">
+  <a class="nav-brand" href="./index.html" aria-label="DAXI Cloud home">
+    <img class="brand-logo" src="./assets/daxi-cloud-logo.jpg" alt="DAXI Cloud" />
+    <span class="brand-text"><strong>DAXI Cloud</strong><span>DAXI TECHNOLOGY</span></span>
+  </a>
+  <button class="nav-menu" type="button" data-menu data-en="Menu" data-zh="菜单">Menu</button>
+  <nav class="nav-links" aria-label="Primary navigation">
+    <a href="./index.html#solutions" data-en="Solutions" data-zh="解决方案">Solutions</a>
+    <a href="./model-api.html" data-en="Platform" data-zh="平台">Platform</a>
+    <a href="./model-api.html#pricing" data-en="Pricing" data-zh="定价">Pricing</a>
+    <a href="#contact" data-en="Contact" data-zh="联系支持">Contact</a>
+  </nav>
+  <div class="nav-actions">
+    <button class="lang-toggle" type="button" data-lang-toggle><i data-lucide="globe-2"></i><span data-lang-current>English</span></button>
+    <a class="btn btn-primary nav-cta" href="./get-started.html" data-en="Start" data-zh="开始使用">Start</a>
+  </div>
+</header>
+
+
+<main>
+  <section class="page-hero"><div class="container"><p class="eyebrow" data-en="Model API platform" data-zh="模型 API 平台">Model API platform</p><h1 class="h1" data-en="One API for mainstream AI models" data-zh="一个 API，接入全部主流大模型">One API for mainstream AI models</h1><p class="lead" data-en="Use familiar API patterns while DAXI Cloud handles routing, metering, token packages, and customer settlement." data-zh="使用熟悉的 API 调用方式，由 DAXI Cloud 处理路由、计量、Token 套餐和客户结算。">Use familiar API patterns while DAXI Cloud handles routing, metering, token packages, and customer settlement.</p></div></section>
+  <section class="section"><div class="container two-col"><div><p class="eyebrow" data-en="Unified gateway" data-zh="统一网关">Unified gateway</p><h2 class="h2" data-en="Route model calls with scenario-aware usage control" data-zh="按场景路由模型调用，并控制用量">Route model calls with scenario-aware usage control</h2><p class="lead" data-en="Connect customers to model capabilities without exposing provider keys or losing token attribution." data-zh="在不暴露供应商密钥、不丢失 Token 归属的前提下，把模型能力交付给客户。">Connect customers to model capabilities without exposing provider keys or losing token attribution.</p><ul class="check-list"><li><i data-lucide="check-circle-2"></i><span data-en="OpenAI-compatible request patterns." data-zh="兼容 OpenAI 风格调用。">OpenAI-compatible request patterns.</span></li><li><i data-lucide="check-circle-2"></i><span data-en="Fallback routing and provider failover." data-zh="备用路由和供应商容灾。">Fallback routing and provider failover.</span></li><li><i data-lucide="check-circle-2"></i><span data-en="Customer-level API keys and budgets." data-zh="客户级 API Key 与预算。">Customer-level API keys and budgets.</span></li><li><i data-lucide="check-circle-2"></i><span data-en="Auditable token ledger." data-zh="可审计 Token 账本。">Auditable token ledger.</span></li></ul></div><div class="code-card"><div class="code-top"><span class="dots"><span></span><span></span><span></span></span><span>POST · api.daxicloud.com/v1/chat</span></div><pre>curl https://api.daxicloud.com/v1/chat/completions \
+  -H "Authorization: Bearer DAXI_CUSTOMER_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-DAXI-Scenario: ecommerce-video" \
+  -d '{
+    "model": "daxi-smart-router",
+    "messages": [{"role":"user","content":"Create a product video script"}]
+  }'</pre></div></div></section>
+  <section class="section pipeline"><div class="container"><div class="section-head"><p class="eyebrow" data-en="Token & billing" data-zh="Token 与计费">Token & billing</p><h2 class="h2" data-en="Built for customer accounting" data-zh="为客户计费设计">Built for customer accounting</h2></div><div class="card-grid"><article class="card"><span class="icon-box"><i data-lucide="gauge"></i></span><h3 data-en="Flexible Metering" data-zh="灵活计量">Flexible Metering</h3><p data-en="Track usage by customer, key, scenario, model, and time range." data-zh="按客户、密钥、场景、模型和时间范围追踪用量。">Track usage by customer, key, scenario, model, and time range.</p></article><article class="card"><span class="icon-box"><i data-lucide="wallet-cards"></i></span><h3 data-en="Auto Recharge" data-zh="自动充值">Auto Recharge</h3><p data-en="Support token packages, prepaid balances, and renewal workflows." data-zh="支持 Token 套餐、预付余额和续费流程。">Support token packages, prepaid balances, and renewal workflows.</p></article><article class="card"><span class="icon-box"><i data-lucide="bar-chart-3"></i></span><h3 data-en="Live Reports" data-zh="实时报表">Live Reports</h3><p data-en="Export usage ledgers and settlement data for operations." data-zh="导出用量账本和结算数据，便于运营对账。">Export usage ledgers and settlement data for operations.</p></article><article class="card"><span class="icon-box"><i data-lucide="shield-check"></i></span><h3 data-en="Key Isolation" data-zh="密钥隔离">Key Isolation</h3><p data-en="Protect provider API keys while issuing downstream customer keys." data-zh="保护供应商 API Key，同时下发客户侧密钥。">Protect provider API keys while issuing downstream customer keys.</p></article></div></div></section>
+  <section class="section" id="pricing"><div class="container"><div class="section-head"><p class="eyebrow" data-en="Token plans" data-zh="Token 套餐">Token plans</p><h2 class="h2" data-en="Start small, scale with usage" data-zh="从小规模开始，按用量扩展">Start small, scale with usage</h2></div><div class="price-grid"><article class="price-card"><span class="badge" data-en="Starter" data-zh="入门">Starter</span><div class="price" data-en="Pay as you go" data-zh="按量付费">Pay as you go</div><p data-en="For pilots and first customer testing." data-zh="适合试点和首批客户测试。">For pilots and first customer testing.</p><a class="btn btn-secondary" href="./get-started.html" data-en="Start" data-zh="开始">Start</a><ul><li data-en="Developer key" data-zh="开发者密钥">Developer key</li><li data-en="Basic usage ledger" data-zh="基础用量账本">Basic usage ledger</li><li data-en="Email support" data-zh="邮件支持">Email support</li></ul></article><article class="price-card featured"><span class="badge" data-en="Popular" data-zh="推荐">Popular</span><div class="price" data-en="¥1,999/mo+" data-zh="¥1,999/月起">¥1,999/mo+</div><p data-en="For customer launches and business growth." data-zh="适合客户上线和业务增长。">For customer launches and business growth.</p><a class="btn btn-primary" href="./get-started.html?scenario=Token%20Access" data-en="Apply Now" data-zh="申请接入">Apply Now</a><ul><li data-en="Customer accounts" data-zh="客户账号">Customer accounts</li><li data-en="Token packages" data-zh="Token 套餐">Token packages</li><li data-en="Settlement reports" data-zh="结算报表">Settlement reports</li></ul></article><article class="price-card"><span class="badge" data-en="Scale" data-zh="规模">Scale</span><div class="price" data-en="Custom" data-zh="定制">Custom</div><p data-en="For enterprise volume and dedicated support." data-zh="适合企业级规模和专属支持。">For enterprise volume and dedicated support.</p><a class="btn btn-secondary" href="./get-started.html?scenario=Enterprise" data-en="Contact Sales" data-zh="联系销售">Contact Sales</a><ul><li data-en="Custom routing" data-zh="定制路由">Custom routing</li><li data-en="SLA support" data-zh="SLA 支持">SLA support</li><li data-en="Private settlement" data-zh="专属结算">Private settlement</li></ul></article></div></div></section>
+  <section class="section"><div class="container cta-card"><div><h2 class="h2" data-en="Ready to connect model APIs?" data-zh="准备接入模型 API？">Ready to connect model APIs?</h2><p data-en="Register and request access for your team or business growth." data-zh="注册并为你的团队或业务增长申请接入。">Register and request access for your team or business growth.</p></div><a class="btn btn-secondary" href="./get-started.html" data-en="Get Started →" data-zh="立即接入 →">Get Started →</a></div></section>
+</main>
+
+
+<footer class="footer" id="contact">
+  <div class="container">
+    <div class="footer-grid">
+      <div><a class="nav-brand" href="./index.html"><img class="brand-logo" src="./assets/daxi-cloud-logo.jpg" alt="DAXI Cloud" /><span class="brand-text"><strong>DAXI Cloud</strong><span>DAXI TECHNOLOGY</span></span></a><p data-en="A branded AI cloud platform for model APIs, token billing, customer management, and industry AI solutions." data-zh="面向模型 API、Token 计费、客户管理和行业 AI 方案的品牌化 AI 云平台。">A branded AI cloud platform for model APIs, token billing, customer management, and industry AI solutions.</p></div>
+      <div><h4 data-en="Product" data-zh="产品">Product</h4><p><a href="./model-api.html" data-en="Model API" data-zh="模型 API">Model API</a></p><p><a href="./model-api.html#pricing" data-en="Token Plans" data-zh="Token 套餐">Token Plans</a></p><p><a href="./get-started.html" data-en="Partner Access" data-zh="合作伙伴接入">Partner Access</a></p></div>
+      <div><h4 data-en="Solutions" data-zh="解决方案">Solutions</h4><p><a href="./video-agent.html" data-en="Video Agent" data-zh="视频 Agent">Video Agent</a></p><p><a href="./ecommerce-agent.html" data-en="E-commerce Agent" data-zh="电商智能 Agent">E-commerce Agent</a></p><p><a href="./index.html#solutions" data-en="More Scenarios" data-zh="更多场景">More Scenarios</a></p></div>
+      <div><h4 data-en="Contact" data-zh="联系">Contact</h4><p>184591914@qq.com</p><p>daxicloud.com</p><p data-en="Hong Kong infrastructure" data-zh="中国香港基础设施">Hong Kong infrastructure</p></div>
+    </div>
+    <div class="footer-bottom"><span>© 2026 DAXI Technology.</span><span>daxicloud.com</span></div>
+  </div>
+</footer>
+
+<script src="./daxi-ui.js?v=20260614-handoff"></script>
+</body>
+</html>
