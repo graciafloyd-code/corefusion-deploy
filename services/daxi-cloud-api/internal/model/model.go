@@ -146,6 +146,8 @@ type TokenRecharge struct {
 	CustomerCode string    `json:"customer_public_id"`
 	Tokens       int64     `json:"tokens"`
 	BalanceAfter int64     `json:"balance_after"`
+	// Wallet 标识本笔充值进的钱包:"token"(模型额度)或 "quota"(视频额度)。两钱包物理隔离、单位不同。
+	Wallet       string    `json:"wallet"`
 	Source       string    `json:"source"`
 	ReferenceID  string    `json:"reference_id"`
 	Notes        string    `json:"notes"`

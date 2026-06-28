@@ -258,6 +258,10 @@ func (s *Store) Migrate() error {
 	if err := s.ensureColumn("customers", "balance_quota", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// 充值台账区分钱包:token(模型额度)/ quota(视频额度)。默认 'token' 向后兼容历史行与支付结算路径。
+	if err := s.ensureColumn("token_recharges", "wallet", "TEXT NOT NULL DEFAULT 'token'"); err != nil {
+		return err
+	}
 	// 多步 settle-once:每个上游计费事件一行,upstream_event_key 稳定键用于原子去重。
 	if err := s.ensureColumn("usage_records", "upstream_event_key", "TEXT"); err != nil {
 		return err
@@ -1099,9 +1103,24 @@ func (s *Store) UpdateTokenOrderStatus(publicID, status string) error {
 	return checkAffected(result)
 }
 
+// CreateRecharge 给「模型额度(token)」钱包充值。
 func (s *Store) CreateRecharge(customerPublicID string, tokens int64, source, referenceID, notes, operator string) (model.TokenRecharge, error) {
-	if tokens <= 0 {
-		return model.TokenRecharge{}, fmt.Errorf("tokens must be greater than 0")
+	return s.createRecharge(customerPublicID, tokens, "token", source, referenceID, notes, operator)
+}
+
+// CreateQuotaRecharge 给「视频额度(quota)」钱包充值(video-agent 用,与 token 钱包物理隔离、单位不同)。
+func (s *Store) CreateQuotaRecharge(customerPublicID string, quota int64, source, referenceID, notes, operator string) (model.TokenRecharge, error) {
+	return s.createRecharge(customerPublicID, quota, "quota", source, referenceID, notes, operator)
+}
+
+// createRecharge 是两个钱包共用的充值实现:wallet="token" 动 balance_tokens,"quota" 动 balance_quota。
+// 两钱包单位不同、不可相加;balance_after 记的是对应钱包充值后的余额。
+func (s *Store) createRecharge(customerPublicID string, amount int64, wallet, source, referenceID, notes, operator string) (model.TokenRecharge, error) {
+	if amount <= 0 {
+		return model.TokenRecharge{}, fmt.Errorf("amount must be greater than 0")
+	}
+	if wallet != "token" && wallet != "quota" {
+		return model.TokenRecharge{}, fmt.Errorf("invalid wallet: %q", wallet)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1110,29 +1129,38 @@ func (s *Store) CreateRecharge(customerPublicID string, tokens int64, source, re
 	defer tx.Rollback()
 
 	var customer model.Customer
-	if err := tx.QueryRow(`SELECT id, public_id, company, country, email, status, balance_tokens, created_at, updated_at FROM customers WHERE public_id = ?`, customerPublicID).
-		Scan(&customer.ID, &customer.PublicID, &customer.Company, &customer.Country, &customer.Email, &customer.Status, &customer.Balance, &customer.CreatedAt, &customer.UpdatedAt); err != nil {
+	if err := tx.QueryRow(`SELECT id, public_id, company, country, email, status, balance_tokens, balance_quota, created_at, updated_at FROM customers WHERE public_id = ?`, customerPublicID).
+		Scan(&customer.ID, &customer.PublicID, &customer.Company, &customer.Country, &customer.Email, &customer.Status, &customer.Balance, &customer.BalanceQuota, &customer.CreatedAt, &customer.UpdatedAt); err != nil {
 		return model.TokenRecharge{}, err
 	}
-	balanceAfter := customer.Balance + tokens
 	now := time.Now().UTC()
-	if _, err := tx.Exec(`UPDATE customers SET balance_tokens = ?, updated_at = ? WHERE id = ?`, balanceAfter, now, customer.ID); err != nil {
-		return model.TokenRecharge{}, err
+	var balanceAfter int64
+	if wallet == "quota" {
+		balanceAfter = customer.BalanceQuota + amount
+		if _, err := tx.Exec(`UPDATE customers SET balance_quota = ?, updated_at = ? WHERE id = ?`, balanceAfter, now, customer.ID); err != nil {
+			return model.TokenRecharge{}, err
+		}
+	} else {
+		balanceAfter = customer.Balance + amount
+		if _, err := tx.Exec(`UPDATE customers SET balance_tokens = ?, updated_at = ? WHERE id = ?`, balanceAfter, now, customer.ID); err != nil {
+			return model.TokenRecharge{}, err
+		}
 	}
 	item := model.TokenRecharge{
 		PublicID:     newPublicID("DXR"),
 		CustomerID:   customer.ID,
 		CustomerCode: customer.PublicID,
-		Tokens:       tokens,
+		Tokens:       amount,
 		BalanceAfter: balanceAfter,
+		Wallet:       wallet,
 		Source:       defaultString(source, "manual"),
 		ReferenceID:  referenceID,
 		Notes:        notes,
 		Operator:     defaultString(operator, "admin"),
 		CreatedAt:    now,
 	}
-	result, err := tx.Exec(`INSERT INTO token_recharges(public_id, customer_id, tokens, balance_after, source, reference_id, notes, operator, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.PublicID, item.CustomerID, item.Tokens, item.BalanceAfter, item.Source, item.ReferenceID, item.Notes, item.Operator, item.CreatedAt)
+	result, err := tx.Exec(`INSERT INTO token_recharges(public_id, customer_id, tokens, balance_after, wallet, source, reference_id, notes, operator, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.PublicID, item.CustomerID, item.Tokens, item.BalanceAfter, item.Wallet, item.Source, item.ReferenceID, item.Notes, item.Operator, item.CreatedAt)
 	if err != nil {
 		return model.TokenRecharge{}, err
 	}
@@ -1158,7 +1186,7 @@ func (s *Store) ListRechargesByCustomer(customerID int64, limit int) ([]model.To
 }
 
 func (s *Store) listRecharges(where string, customerID int64, limit int) ([]model.TokenRecharge, error) {
-	query := `SELECT r.id, r.public_id, r.customer_id, c.public_id, r.tokens, r.balance_after, r.source, r.reference_id, r.notes, r.operator, r.created_at
+	query := `SELECT r.id, r.public_id, r.customer_id, c.public_id, r.tokens, r.balance_after, r.wallet, r.source, r.reference_id, r.notes, r.operator, r.created_at
 		FROM token_recharges r JOIN customers c ON c.id = r.customer_id ` + where + ` ORDER BY r.created_at DESC LIMIT ?`
 	args := []any{limit}
 	if where != "" {
@@ -1172,7 +1200,7 @@ func (s *Store) listRecharges(where string, customerID int64, limit int) ([]mode
 	out := []model.TokenRecharge{}
 	for rows.Next() {
 		var item model.TokenRecharge
-		if err := rows.Scan(&item.ID, &item.PublicID, &item.CustomerID, &item.CustomerCode, &item.Tokens, &item.BalanceAfter, &item.Source, &item.ReferenceID, &item.Notes, &item.Operator, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.PublicID, &item.CustomerID, &item.CustomerCode, &item.Tokens, &item.BalanceAfter, &item.Wallet, &item.Source, &item.ReferenceID, &item.Notes, &item.Operator, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, item)

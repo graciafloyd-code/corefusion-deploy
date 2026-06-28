@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -646,6 +647,7 @@ func (s *Server) handleCreateRecharge(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		CustomerPublicID string `json:"customer_public_id"`
 		Tokens           int64  `json:"tokens"`
+		Wallet           string `json:"wallet"` // "token"(默认,模型额度)| "quota"(视频额度)
 		Source           string `json:"source"`
 		ReferenceID      string `json:"reference_id"`
 		Notes            string `json:"notes"`
@@ -655,7 +657,17 @@ func (s *Server) handleCreateRecharge(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	item, err := s.store.CreateRecharge(req.CustomerPublicID, req.Tokens, req.Source, req.ReferenceID, req.Notes, req.Operator)
+	var item model.TokenRecharge
+	var err error
+	switch req.Wallet {
+	case "quota":
+		item, err = s.store.CreateQuotaRecharge(req.CustomerPublicID, req.Tokens, req.Source, req.ReferenceID, req.Notes, req.Operator)
+	case "", "token":
+		item, err = s.store.CreateRecharge(req.CustomerPublicID, req.Tokens, req.Source, req.ReferenceID, req.Notes, req.Operator)
+	default:
+		badRequest(w, fmt.Errorf("invalid wallet: %q", req.Wallet))
+		return
+	}
 	if err != nil {
 		badRequest(w, err)
 		return
