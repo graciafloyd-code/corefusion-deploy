@@ -630,15 +630,18 @@
       table.innerHTML = '<div class="empty-state"><strong>No recharge records yet.</strong><span>Manual top-ups will appear here.</span></div>';
       return;
     }
+    // 钱包区分:quota=视频额度,token=模型额度。两钱包单位不同、不可混读,故台账独列一栏。
+    const walletLabel = (wallet) => (wallet === 'quota' ? 'Video (quota)' : 'Model (token)');
     table.innerHTML = `
-      <div class="ops-row ops-row-head recharge-row"><span>Recharge</span><span>Customer</span><span>Tokens</span><span>Balance</span><span>Source</span></div>
+      <div class="ops-row ops-row-head recharge-row"><span>Recharge</span><span>Customer</span><span>Wallet</span><span>Amount</span><span>Balance</span><span>Source</span></div>
       ${recharges.map((item) => `
         <div class="ops-row recharge-row">
           <span>${item.public_id}<small>${formatDate(item.created_at)}</small></span>
           <span>${item.customer_public_id}</span>
+          <span><mark>${walletLabel(item.wallet)}</mark></span>
           <span>${item.tokens}</span>
           <span>${item.balance_after}</span>
-          <span><mark>${item.source}</mark></span>
+          <span>${item.source}</span>
         </div>
       `).join('')}
     `;
