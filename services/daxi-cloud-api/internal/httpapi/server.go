@@ -38,6 +38,9 @@ func NewServer(cfg config.Config, store *db.Store, upstreamClient *upstream.Clie
 	s := &Server{cfg: cfg, store: store, upstream: upstreamClient, mux: http.NewServeMux(), adminSessions: make(map[string]adminSession)}
 	s.routes()
 	go s.cleanupExpiredAdminSessions(30 * time.Minute)
+	if cfg.VideoAgentSettleIntervalSecs > 0 {
+		go s.settleVideoAgentTasksLoop(time.Duration(cfg.VideoAgentSettleIntervalSecs) * time.Second)
+	}
 	return s
 }
 

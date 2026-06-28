@@ -25,6 +25,9 @@ type Config struct {
 	// 预估 quota(占位,宁可多扣再退;真实结算以上游 usage.quota 为准,跑真实任务后校准)。
 	VideoAgentEstDraftQuota int64 // 脚本/分镜/卖点生成一次
 	VideoAgentEstTaskQuota  int64 // 视频任务一次
+	// 后台补偿结算:客户不轮询时,定期主动查上游终态并结算。
+	VideoAgentSettleIntervalSecs int64
+	VideoAgentSettleAfterSecs    int64
 }
 
 func Load() Config {
@@ -45,8 +48,10 @@ func Load() Config {
 		MaxBodyBytes:       envInt64("DAXI_MAX_BODY_BYTES", 1<<20),
 		VideoAgentBaseURL: strings.TrimRight(env("DAXI_VIDEO_AGENT_UPSTREAM_BASE_URL",
 			strings.TrimSuffix(upstreamBase, "/v1")), "/"),
-		VideoAgentEstDraftQuota: envInt64("DAXI_VIDEO_AGENT_EST_DRAFT_QUOTA", 80000),
-		VideoAgentEstTaskQuota:  envInt64("DAXI_VIDEO_AGENT_EST_TASK_QUOTA", 2500000),
+		VideoAgentEstDraftQuota:      envInt64("DAXI_VIDEO_AGENT_EST_DRAFT_QUOTA", 80000),
+		VideoAgentEstTaskQuota:       envInt64("DAXI_VIDEO_AGENT_EST_TASK_QUOTA", 2500000),
+		VideoAgentSettleIntervalSecs: envInt64("DAXI_VIDEO_AGENT_SETTLE_INTERVAL_SECONDS", 60),
+		VideoAgentSettleAfterSecs:    envInt64("DAXI_VIDEO_AGENT_SETTLE_AFTER_SECONDS", 300),
 	}
 }
 

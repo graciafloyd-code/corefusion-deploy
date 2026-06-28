@@ -116,6 +116,48 @@ func TestSettleVideoBillingEvent_SameEventSettledOnce(t *testing.T) {
 	}
 }
 
+func TestSettleVideoBillingEvent_ConflictReturnsExistingRecordID(t *testing.T) {
+	store := openTestStore(t)
+	customerID := fundVideoQuota(t, store, 1000)
+
+	const key = "task:upstream-fixed-return-id"
+	firstID, _, settled, err := store.SettleVideoBillingEvent(key, customerID, 1, "video-agent", 100, false)
+	if err != nil {
+		t.Fatalf("first settle: %v", err)
+	}
+	if !settled || firstID <= 0 {
+		t.Fatalf("first settle id=%d settled=%v", firstID, settled)
+	}
+
+	secondID, _, settled, err := store.SettleVideoBillingEvent(key, customerID, 1, "video-agent", 100, false)
+	if err != nil {
+		t.Fatalf("second settle: %v", err)
+	}
+	if settled {
+		t.Fatalf("second settle should be idempotent")
+	}
+	if secondID != firstID {
+		t.Fatalf("conflict rec id = %d, want existing id %d", secondID, firstID)
+	}
+	if bal := videoQuotaBalance(t, store, customerID); bal != 900 {
+		t.Fatalf("balance=%d want 900", bal)
+	}
+}
+
+func TestSettleVideoBillingEvent_RejectsEmptyStableIDKeys(t *testing.T) {
+	store := openTestStore(t)
+	customerID := fundVideoQuota(t, store, 1000)
+
+	for _, key := range []string{"draft:", "task:"} {
+		if _, _, _, err := store.SettleVideoBillingEvent(key, customerID, 1, "video-agent", 100, false); err == nil {
+			t.Fatalf("SettleVideoBillingEvent(%q) should reject empty upstream id", key)
+		}
+	}
+	if bal := videoQuotaBalance(t, store, customerID); bal != 1000 {
+		t.Fatalf("balance changed on rejected keys: %d", bal)
+	}
+}
+
 // ③ 终态无 usage 兜底：用 estimated quota 结算 + needs_review,不静默不扣。
 func TestSettleVideoBillingEvent_EstimatedFallbackMarksNeedsReview(t *testing.T) {
 	store := openTestStore(t)
@@ -145,5 +187,51 @@ func TestSettleVideoBillingEvent_EstimatedFallbackMarksNeedsReview(t *testing.T)
 	}
 	if needsReview != 1 {
 		t.Fatalf("needs_review want 1, got %d (兜底结算必须标待复核)", needsReview)
+	}
+}
+
+// P1-2(批量场景):多个【空上游 id】计费事件不得互相去重导致批量漏扣。
+// 退化键全部以 ":" 结尾(draft:/task:)。若无 HasSuffix(":") 守卫,部分唯一索引
+// (WHERE upstream_event_key != '')会让首个 "draft:" 插入成功并扣费、其余撞键返回"已结算",
+// N 个真实计费坍缩成 1 次 = 批量漏扣。守卫应让每个都被拒、零结算、余额完好。
+func TestSettleVideoBillingEvent_EmptyIDsDoNotBatchDedupUndercharge(t *testing.T) {
+	store := openTestStore(t)
+	const initial = 1000
+	customerID := fundVideoQuota(t, store, initial)
+
+	const n = 50
+	var settled, rejected int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, _, ok, err := store.SettleVideoBillingEvent("draft:", customerID, 1, "video-agent", 100, false)
+			if err != nil {
+				atomic.AddInt64(&rejected, 1)
+				return
+			}
+			if ok {
+				atomic.AddInt64(&settled, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if settled != 0 {
+		t.Fatalf("settled=%d want 0(空 id 事件不应有任何结算,否则即批量坍缩漏扣)", settled)
+	}
+	if rejected != n {
+		t.Fatalf("rejected=%d want %d(每个退化键都应被守卫拒绝)", rejected, n)
+	}
+	if bal := videoQuotaBalance(t, store, customerID); bal != initial {
+		t.Fatalf("balance=%d want %d(批量空 id 不得扣费)", bal, initial)
+	}
+	var rows int64
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM usage_records WHERE customer_id = ?`, customerID).Scan(&rows); err != nil {
+		t.Fatalf("count usage: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("usage rows=%d want 0", rows)
 	}
 }

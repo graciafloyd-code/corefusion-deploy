@@ -1,10 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"daxi-cloud-api/internal/model"
 	"daxi-cloud-api/internal/upstream"
@@ -57,11 +61,31 @@ func videoIdentity(apiKey model.APIKey, customer model.Customer) upstream.Identi
 	return upstream.Identity{CustomerPublicID: customer.PublicID, APIKeyPublicID: apiKey.PublicID, Scenario: "video-agent"}
 }
 
+func videoTaskIdentity(task model.VideoTask, apiKey model.APIKey, customer model.Customer) upstream.Identity {
+	customerPublicID := task.CustomerPublicID
+	if strings.TrimSpace(customerPublicID) == "" {
+		customerPublicID = customer.PublicID
+	}
+	apiKeyPublicID := task.APIKeyPublicID
+	if strings.TrimSpace(apiKeyPublicID) == "" {
+		apiKeyPublicID = apiKey.PublicID
+	}
+	return upstream.Identity{CustomerPublicID: customerPublicID, APIKeyPublicID: apiKeyPublicID, Scenario: "video-agent"}
+}
+
 func videoScenario(r *http.Request) string {
 	if v := strings.TrimSpace(r.Header.Get("X-DAXI-Scenario")); v != "" {
 		return v
 	}
 	return "video-agent"
+}
+
+func videoBillingEventKey(kind, upstreamID string) (string, error) {
+	upstreamID = strings.TrimSpace(upstreamID)
+	if upstreamID == "" {
+		return "", fmt.Errorf("missing upstream %s id", kind)
+	}
+	return kind + ":" + upstreamID, nil
 }
 
 // callUpstream 转发并读回响应体(含 MaxBody 上限);非 2xx 时按原状态码透传、不泄露上游 body。
@@ -118,20 +142,33 @@ func (s *Server) handleVideoAgentGenerateDraft(w http.ResponseWriter, r *http.Re
 		return
 	}
 	scenario := videoScenario(r)
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if draft, found, err := s.store.FindVideoAgentDraftByIdempotency(customer.ID, apiKey.ID, idem); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check draft idempotency")
+		return
+	} else if found {
+		writeJSON(w, http.StatusOK, map[string]any{"draft_id": draft.PublicID, "scenario": draft.Scenario, "usage": map[string]any{"quota": int64(0)}})
+		return
+	}
 	respBody, _, ok := s.callUpstream(w, r, http.MethodPost, "/agents/video/drafts/generate", body, videoIdentity(apiKey, customer))
 	if !ok {
 		return
 	}
 	m := decodeMap(respBody)
 	upstreamDraftID := jsonStr(m, "id", "draft_id")
-	draft, _, err := s.store.UpsertVideoAgentDraft(customer.ID, apiKey.ID, scenario, upstreamDraftID, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
+	draftEventKey, err := videoBillingEventKey("draft", upstreamDraftID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	draft, _, err := s.store.UpsertVideoAgentDraft(customer.ID, apiKey.ID, scenario, upstreamDraftID, idem)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist draft")
 		return
 	}
 	settledQuota := int64(0)
 	if quota, found := upstream.ParseQuotaUsage(respBody); found && quota > 0 {
-		if _, _, _, err := s.store.SettleVideoBillingEvent("draft:"+upstreamDraftID, customer.ID, apiKey.ID, scenario, quota, false); err != nil {
+		if _, _, _, err := s.store.SettleVideoBillingEvent(draftEventKey, customer.ID, apiKey.ID, scenario, quota, false); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to settle draft usage")
 			return
 		}
@@ -205,12 +242,18 @@ func (s *Server) handleVideoAgentCreateTask(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	m := decodeMap(respBody)
+	upstreamTaskID := jsonStr(m, "id", "task_id")
+	if _, err := videoBillingEventKey("task", upstreamTaskID); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
 	task := &model.VideoTask{
 		CustomerPublicID:  customer.PublicID,
 		CustomerID:        customer.ID,
 		APIKeyID:          apiKey.ID,
+		APIKeyPublicID:    apiKey.PublicID,
 		Scenario:          defaultScenario(draft.Scenario),
-		UpstreamTaskID:    jsonStr(m, "id", "task_id"),
+		UpstreamTaskID:    upstreamTaskID,
 		UpstreamRequestID: requestID,
 		EstimatedQuota:    s.cfg.VideoAgentEstTaskQuota,
 		Status:            mapUpstreamStatus(jsonStr(m, "status")),
@@ -251,10 +294,31 @@ func (s *Server) handleVideoAgentGetTask(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	respBody, _, ok := s.callUpstream(w, r, http.MethodGet, "/agents/video/tasks/"+task.UpstreamTaskID, nil, videoIdentity(apiKey, customer))
-	if !ok {
+	out, err := s.refreshAndSettleVideoAgentTask(r.Context(), task, videoTaskIdentity(task, apiKey, customer))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) refreshAndSettleVideoAgentTask(ctx context.Context, task model.VideoTask, id upstream.Identity) (map[string]any, error) {
+	if _, err := videoBillingEventKey("task", task.UpstreamTaskID); err != nil {
+		return nil, err
+	}
+	resp, _, err := s.upstream.CallVideoAgent(ctx, http.MethodGet, "/agents/video/tasks/"+task.UpstreamTaskID, nil, id)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("upstream video-agent returned %s", resp.Status)
+	}
+	return s.settleVideoAgentTaskFromResponse(task, respBody)
+}
+
+func (s *Server) settleVideoAgentTaskFromResponse(task model.VideoTask, respBody []byte) (map[string]any, error) {
 	m := decodeMap(respBody)
 	daxiStatus := mapUpstreamStatus(jsonStr(m, "status"))
 	progress := jsonInt(m, "progress")
@@ -264,23 +328,24 @@ func (s *Server) handleVideoAgentGetTask(w http.ResponseWriter, r *http.Request)
 	settledQuota := int64(0)
 	usageRecordID := int64(0)
 	needsReview := task.NeedsReview
-	eventKey := "task:" + task.UpstreamTaskID
+	eventKey, err := videoBillingEventKey("task", task.UpstreamTaskID)
+	if err != nil {
+		return nil, err
+	}
 	switch daxiStatus {
 	case "Completed":
 		if found && quota > 0 {
-			recID, _, _, err := s.store.SettleVideoBillingEvent(eventKey, customer.ID, apiKey.ID, defaultScenario(task.Scenario), quota, false)
+			recID, _, _, err := s.store.SettleVideoBillingEvent(eventKey, task.CustomerID, task.APIKeyID, defaultScenario(task.Scenario), quota, false)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to settle task usage")
-				return
+				return nil, err
 			}
 			settledQuota = quota
 			usageRecordID = recID
 		} else {
 			// 终态无 usage 兜底:按预估结算 + needs_review,绝不静默不扣。
-			recID, _, _, err := s.store.SettleVideoBillingEvent(eventKey, customer.ID, apiKey.ID, defaultScenario(task.Scenario), task.EstimatedQuota, true)
+			recID, _, _, err := s.store.SettleVideoBillingEvent(eventKey, task.CustomerID, task.APIKeyID, defaultScenario(task.Scenario), task.EstimatedQuota, true)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to settle task usage")
-				return
+				return nil, err
 			}
 			settledQuota = task.EstimatedQuota
 			usageRecordID = recID
@@ -288,23 +353,24 @@ func (s *Server) handleVideoAgentGetTask(w http.ResponseWriter, r *http.Request)
 		}
 	case "Failed":
 		if found && quota > 0 {
-			recID, _, _, err := s.store.SettleVideoBillingEvent(eventKey, customer.ID, apiKey.ID, defaultScenario(task.Scenario), quota, false)
+			recID, _, _, err := s.store.SettleVideoBillingEvent(eventKey, task.CustomerID, task.APIKeyID, defaultScenario(task.Scenario), quota, false)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to settle task usage")
-				return
+				return nil, err
 			}
 			settledQuota = quota
 			usageRecordID = recID
 		}
 	}
 	// 回链 usage_record_id(仅本次真正结算时 recID>0;重试已结算返回 0,UpdateVideoAgentTaskState 内 CASE 保留原值)。
-	_ = s.store.UpdateVideoAgentTaskState(task.PublicID, daxiStatus, progress, resultURL, usageRecordID, needsReview)
+	if err := s.store.UpdateVideoAgentTaskState(task.PublicID, daxiStatus, progress, resultURL, usageRecordID, needsReview); err != nil {
+		return nil, err
+	}
 
 	out := map[string]any{"task_id": task.PublicID, "status": daxiStatus, "progress": progress, "result_url": resultURL}
 	if settledQuota > 0 || found {
 		out["usage"] = map[string]any{"quota": settledQuota}
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 // GET /v1/video-agent/tasks/{id}/final-video
@@ -332,6 +398,38 @@ func defaultScenario(s string) string {
 		return "video-agent"
 	}
 	return s
+}
+
+func (s *Server) settleVideoAgentTasksLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		after := time.Duration(s.cfg.VideoAgentSettleAfterSecs) * time.Second
+		if after <= 0 {
+			after = 5 * time.Minute
+		}
+		if err := s.settlePendingVideoAgentTasksOnce(time.Now().UTC().Add(-after)); err != nil {
+			log.Printf("video-agent compensation settle failed: %v", err)
+		}
+	}
+}
+
+func (s *Server) settlePendingVideoAgentTasksOnce(cutoff time.Time) error {
+	tasks, err := s.store.ListUnsettledVideoAgentTasks(cutoff, 50)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, task := range tasks {
+		id := upstream.Identity{CustomerPublicID: task.CustomerPublicID, APIKeyPublicID: task.APIKeyPublicID, Scenario: "video-agent"}
+		if _, err := s.refreshAndSettleVideoAgentTask(context.Background(), task, id); err != nil {
+			log.Printf("video-agent compensation failed for %s/%s: %v", task.PublicID, task.UpstreamTaskID, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 // sanitizeUpstream 把上游 map 里若存在的 raw 状态枚举映射成 DAXI 枚举,避免漏给客户。

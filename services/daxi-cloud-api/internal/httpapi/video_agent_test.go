@@ -6,8 +6,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"daxi-cloud-api/internal/db"
 	"daxi-cloud-api/internal/model"
 )
 
@@ -175,4 +178,227 @@ func TestVideoAgentFlow_AttributionStatusMappingSettleOnce(t *testing.T) {
 			t.Errorf("call %d 上游 Authorization=%q", i, h.Get("Authorization"))
 		}
 	}
+}
+
+func TestVideoAgentRejectsMissingUpstreamStableIDs(t *testing.T) {
+	var calls atomic.Int64
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/drafts/generate"):
+			return mockResponse("application/json", `{"status":"draft_ready","usage":{"quota":100}}`), nil
+		case strings.HasSuffix(r.URL.Path, "/tasks") && r.Method == http.MethodPost:
+			return mockResponse("application/json", `{"status":"SUBMITTED"}`), nil
+		}
+		return mockResponse("application/json", `{}`), nil
+	})
+	srv, store := newTestServer(t, transport)
+	cust := &model.Customer{Company: "VC", Status: "Active"}
+	if err := store.CreateCustomer(cust); err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	if err := store.UpdateCustomerQuotaBalance(cust.PublicID, 1_000_000); err != nil {
+		t.Fatalf("fund quota: %v", err)
+	}
+	_, rawKey, err := store.CreateAPIKey(cust.PublicID, "k", "")
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/video-agent/drafts/generate", strings.NewReader(`{"prompt":"x"}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("draft without upstream id should fail, body=%s", rec.Body.String())
+	}
+	if bal := videoQuotaBalanceHTTP(t, store, cust.PublicID); bal != 1_000_000 {
+		t.Fatalf("balance changed after missing draft id: %d", bal)
+	}
+	var usageRows int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM usage_records WHERE customer_id = ?`, cust.ID).Scan(&usageRows); err != nil {
+		t.Fatalf("count usage: %v", err)
+	}
+	if usageRows != 0 {
+		t.Fatalf("usage rows after missing draft id = %d, want 0", usageRows)
+	}
+
+	if calls.Load() != 1 {
+		t.Fatalf("calls=%d want 1", calls.Load())
+	}
+}
+
+func TestVideoAgentRejectsMissingUpstreamTaskID(t *testing.T) {
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/drafts/generate"):
+			return mockResponse("application/json", `{"id":"upd-task-missing","status":"draft_ready","usage":{"quota":100}}`), nil
+		case strings.HasSuffix(r.URL.Path, "/tasks") && r.Method == http.MethodPost:
+			return mockResponse("application/json", `{"status":"SUBMITTED"}`), nil
+		}
+		return mockResponse("application/json", `{}`), nil
+	})
+	srv, store := newVideoAgentTestCustomer(t, transport, 1_000_000)
+	rawKey := seedVideoAPIKey(t, store)
+
+	draftRec := videoReq(t, srv, rawKey, "POST", "/v1/video-agent/drafts/generate", `{"prompt":"x"}`)
+	if draftRec.Code != http.StatusOK {
+		t.Fatalf("draft code=%d body=%s", draftRec.Code, draftRec.Body.String())
+	}
+	var draft struct {
+		DraftID string `json:"draft_id"`
+	}
+	if err := json.Unmarshal(draftRec.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("decode draft: %v", err)
+	}
+
+	taskRec := videoReq(t, srv, rawKey, "POST", "/v1/video-agent/drafts/"+draft.DraftID+"/tasks", `{}`)
+	if taskRec.Code == http.StatusCreated {
+		t.Fatalf("task without upstream id should fail, body=%s", taskRec.Body.String())
+	}
+	var taskRows int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM video_tasks WHERE task_type = 'video-agent'`).Scan(&taskRows); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if taskRows != 0 {
+		t.Fatalf("video task rows after missing upstream id = %d, want 0", taskRows)
+	}
+	if bal := videoQuotaBalanceHTTP(t, store, firstCustomerPublicID(t, store)); bal != 999900 {
+		t.Fatalf("balance=%d want only draft charged", bal)
+	}
+}
+
+func TestVideoAgentDraftIdempotencyPrecheckDoesNotCallUpstreamTwice(t *testing.T) {
+	var draftCalls atomic.Int64
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/drafts/generate") {
+			n := draftCalls.Add(1)
+			return mockResponse("application/json", `{"id":"upd`+string(rune('0'+n))+`","status":"draft_ready","usage":{"quota":100}}`), nil
+		}
+		return mockResponse("application/json", `{}`), nil
+	})
+	srv, store := newVideoAgentTestCustomer(t, transport, 1_000_000)
+	rawKey := seedVideoAPIKey(t, store)
+
+	do := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/v1/video-agent/drafts/generate", strings.NewReader(`{"prompt":"x"}`))
+		req.Header.Set("Authorization", "Bearer "+rawKey)
+		req.Header.Set("Idempotency-Key", "idem-1")
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		return rec
+	}
+
+	first := do()
+	if first.Code != http.StatusOK {
+		t.Fatalf("first code=%d body=%s", first.Code, first.Body.String())
+	}
+	second := do()
+	if second.Code != http.StatusOK {
+		t.Fatalf("second code=%d body=%s", second.Code, second.Body.String())
+	}
+	if draftCalls.Load() != 1 {
+		t.Fatalf("draft upstream calls=%d want 1", draftCalls.Load())
+	}
+	if bal := videoQuotaBalanceHTTP(t, store, firstCustomerPublicID(t, store)); bal != 999900 {
+		t.Fatalf("balance=%d want one draft charge only", bal)
+	}
+}
+
+func TestVideoAgentCompensationSettlesUnpolledCompletedTask(t *testing.T) {
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/drafts/generate"):
+			return mockResponse("application/json", `{"id":"upd-comp","status":"draft_ready","usage":{"quota":100}}`), nil
+		case strings.HasSuffix(r.URL.Path, "/tasks") && r.Method == http.MethodPost:
+			return mockResponse("application/json", `{"id":"upt-comp","status":"SUBMITTED"}`), nil
+		case strings.Contains(r.URL.Path, "/tasks/upt-comp"):
+			return mockResponse("application/json", `{"status":"SUCCESS","progress":100,"result_url":"https://supchuang.com/v/x.mp4","usage":{"quota":5000}}`), nil
+		}
+		return mockResponse("application/json", `{}`), nil
+	})
+	srv, store := newVideoAgentTestCustomer(t, transport, 1_000_000)
+	rawKey := seedVideoAPIKey(t, store)
+
+	draftRec := videoReq(t, srv, rawKey, "POST", "/v1/video-agent/drafts/generate", `{"prompt":"x"}`)
+	if draftRec.Code != http.StatusOK {
+		t.Fatalf("draft code=%d body=%s", draftRec.Code, draftRec.Body.String())
+	}
+	var draft struct {
+		DraftID string `json:"draft_id"`
+	}
+	if err := json.Unmarshal(draftRec.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("decode draft: %v", err)
+	}
+	taskRec := videoReq(t, srv, rawKey, "POST", "/v1/video-agent/drafts/"+draft.DraftID+"/tasks", `{}`)
+	if taskRec.Code != http.StatusCreated {
+		t.Fatalf("task code=%d body=%s", taskRec.Code, taskRec.Body.String())
+	}
+
+	if _, err := store.DB().Exec(`UPDATE video_tasks SET created_at = ?`, time.Now().Add(-time.Hour).UTC()); err != nil {
+		t.Fatalf("age task: %v", err)
+	}
+	if err := srv.settlePendingVideoAgentTasksOnce(time.Now().UTC()); err != nil {
+		t.Fatalf("settle pending: %v", err)
+	}
+	if bal := videoQuotaBalanceHTTP(t, store, firstCustomerPublicID(t, store)); bal != 994900 {
+		t.Fatalf("balance=%d want draft + task settled", bal)
+	}
+	var usageRecordID int64
+	if err := store.DB().QueryRow(`SELECT usage_record_id FROM video_tasks WHERE upstream_task_id = 'upt-comp'`).Scan(&usageRecordID); err != nil {
+		t.Fatalf("read task usage: %v", err)
+	}
+	if usageRecordID <= 0 {
+		t.Fatalf("usage_record_id not linked")
+	}
+}
+
+func videoReq(t *testing.T, srv *Server, rawKey, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	return rec
+}
+
+func newVideoAgentTestCustomer(t *testing.T, transport http.RoundTripper, balance int64) (*Server, *db.Store) {
+	t.Helper()
+	srv, store := newTestServer(t, transport)
+	cust := &model.Customer{Company: "VC", Status: "Active"}
+	if err := store.CreateCustomer(cust); err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	if err := store.UpdateCustomerQuotaBalance(cust.PublicID, balance); err != nil {
+		t.Fatalf("fund quota: %v", err)
+	}
+	return srv, store
+}
+
+func seedVideoAPIKey(t *testing.T, store *db.Store) string {
+	t.Helper()
+	publicID := firstCustomerPublicID(t, store)
+	_, rawKey, err := store.CreateAPIKey(publicID, "k", "")
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	return rawKey
+}
+
+func firstCustomerPublicID(t *testing.T, store *db.Store) string {
+	t.Helper()
+	var publicID string
+	if err := store.DB().QueryRow(`SELECT public_id FROM customers ORDER BY id LIMIT 1`).Scan(&publicID); err != nil {
+		t.Fatalf("read customer public id: %v", err)
+	}
+	return publicID
+}
+
+func videoQuotaBalanceHTTP(t *testing.T, store *db.Store, publicID string) int64 {
+	t.Helper()
+	c, err := store.GetCustomer(publicID)
+	if err != nil {
+		t.Fatalf("get customer: %v", err)
+	}
+	return c.BalanceQuota
 }

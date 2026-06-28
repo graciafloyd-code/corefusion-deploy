@@ -51,12 +51,12 @@ type ComputeInquiry struct {
 }
 
 type Customer struct {
-	ID        int64     `json:"id"`
-	PublicID  string    `json:"public_id"`
-	Company   string    `json:"company"`
-	Country   string    `json:"country"`
-	Email     string    `json:"email"`
-	Status    string    `json:"status"`
+	ID       int64  `json:"id"`
+	PublicID string `json:"public_id"`
+	Company  string `json:"company"`
+	Country  string `json:"country"`
+	Email    string `json:"email"`
+	Status   string `json:"status"`
 	// Balance 是「模型额度(token)」钱包,chat 等按 token 扣。
 	// 注意:这是 token,不是 quota。video-agent 走独立的 BalanceQuota(quota 单位)钱包,两栏不混显/不混扣。
 	// 后续任务:chat 扣费对齐到 quota 后再考虑合并(见 project_daxi_video_agent 记忆)。
@@ -216,6 +216,7 @@ type VideoTask struct {
 	// video-agent 薄代理新增(多步流程归属 + 上游映射 + 计费)
 	CustomerID        int64  `json:"customer_id,omitempty"`
 	APIKeyID          int64  `json:"api_key_id,omitempty"`
+	APIKeyPublicID    string `json:"api_key_public_id,omitempty"`
 	Scenario          string `json:"scenario,omitempty"`
 	UpstreamTaskID    string `json:"upstream_task_id,omitempty"`
 	UpstreamRequestID string `json:"upstream_request_id,omitempty"`

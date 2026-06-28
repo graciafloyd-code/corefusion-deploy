@@ -38,6 +38,10 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
 func (s *Store) Migrate() error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS leads (
@@ -872,8 +876,12 @@ var ErrVideoEventAlreadySettled = errors.New("video billing event already settle
 // 返回 (overspend, settled);settled=false 表示该事件此前已结算,未重复扣。
 // 返回 (usageRecordID, overspend, settled, err)。settled=false(已结算)时 usageRecordID=0。
 func (s *Store) SettleVideoBillingEvent(eventKey string, customerID, apiKeyID int64, scenario string, quota int64, needsReview bool) (int64, int64, bool, error) {
-	if strings.TrimSpace(eventKey) == "" {
+	eventKey = strings.TrimSpace(eventKey)
+	if eventKey == "" {
 		return 0, 0, false, fmt.Errorf("eventKey is required")
+	}
+	if strings.HasSuffix(eventKey, ":") {
+		return 0, 0, false, fmt.Errorf("eventKey has empty upstream id: %s", eventKey)
 	}
 	if quota < 0 {
 		quota = 0
@@ -907,11 +915,15 @@ func (s *Store) SettleVideoBillingEvent(eventKey string, customerID, apiKeyID in
 		// 仅当冲突确实来自 upstream_event_key 唯一索引时才判为「已结算」(幂等短路);
 		// 任何其它错误(含别的唯一约束/DB 故障)一律上抛,绝不误判为已结算而漏扣。
 		if isEventKeyConflict(err) {
+			var existingID int64
+			if qErr := conn.QueryRowContext(ctx, `SELECT id FROM usage_records WHERE upstream_event_key = ?`, eventKey).Scan(&existingID); qErr != nil {
+				return 0, 0, false, qErr
+			}
 			if _, cErr := conn.ExecContext(ctx, `COMMIT`); cErr != nil {
 				return 0, 0, false, cErr
 			}
 			committed = true
-			return 0, 0, false, nil
+			return existingID, 0, false, nil
 		}
 		return 0, 0, false, err
 	}
@@ -1291,6 +1303,20 @@ func (s *Store) getVideoAgentDraftByIdem(customerID, apiKeyID int64, idem string
 	return d, err
 }
 
+func (s *Store) FindVideoAgentDraftByIdempotency(customerID, apiKeyID int64, idem string) (model.VideoAgentDraft, bool, error) {
+	if strings.TrimSpace(idem) == "" {
+		return model.VideoAgentDraft{}, false, nil
+	}
+	draft, err := s.getVideoAgentDraftByIdem(customerID, apiKeyID, idem)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.VideoAgentDraft{}, false, nil
+	}
+	if err != nil {
+		return model.VideoAgentDraft{}, false, err
+	}
+	return draft, true, nil
+}
+
 // UpsertVideoAgentDraft 落 draft 归属镜像;带 idempotency_key 时命中已存则返回原记录(created=false)。
 func (s *Store) UpsertVideoAgentDraft(customerID, apiKeyID int64, scenario, upstreamDraftID, idem string) (model.VideoAgentDraft, bool, error) {
 	if strings.TrimSpace(idem) != "" {
@@ -1350,8 +1376,10 @@ func (s *Store) CreateVideoAgentTaskMapping(t *model.VideoTask) error {
 func (s *Store) GetVideoAgentTaskForCustomer(publicID string, customerID int64) (model.VideoTask, error) {
 	var t model.VideoTask
 	var needsReview int
-	err := s.db.QueryRow(`SELECT id, public_id, customer_id, api_key_id, COALESCE(scenario,''), COALESCE(upstream_task_id,''), COALESCE(upstream_request_id,''), usage_record_id, estimated_quota, needs_review, status, progress, COALESCE(result_url,''), COALESCE(error_message,''), created_at, updated_at FROM video_tasks WHERE public_id = ? AND customer_id = ?`, publicID, customerID).
-		Scan(&t.ID, &t.PublicID, &t.CustomerID, &t.APIKeyID, &t.Scenario, &t.UpstreamTaskID, &t.UpstreamRequestID, &t.UsageRecordID, &t.EstimatedQuota, &needsReview, &t.Status, &t.Progress, &t.ResultURL, &t.ErrorMessage, &t.CreatedAt, &t.UpdatedAt)
+	err := s.db.QueryRow(`SELECT t.id, t.public_id, t.customer_public_id, t.customer_id, t.api_key_id, k.public_id, COALESCE(t.scenario,''), COALESCE(t.upstream_task_id,''), COALESCE(t.upstream_request_id,''), t.usage_record_id, t.estimated_quota, t.needs_review, t.status, t.progress, COALESCE(t.result_url,''), COALESCE(t.error_message,''), t.created_at, t.updated_at
+		FROM video_tasks t JOIN api_keys k ON k.id = t.api_key_id
+		WHERE t.public_id = ? AND t.customer_id = ?`, publicID, customerID).
+		Scan(&t.ID, &t.PublicID, &t.CustomerPublicID, &t.CustomerID, &t.APIKeyID, &t.APIKeyPublicID, &t.Scenario, &t.UpstreamTaskID, &t.UpstreamRequestID, &t.UsageRecordID, &t.EstimatedQuota, &needsReview, &t.Status, &t.Progress, &t.ResultURL, &t.ErrorMessage, &t.CreatedAt, &t.UpdatedAt)
 	t.NeedsReview = needsReview == 1
 	return t, err
 }
@@ -1372,6 +1400,36 @@ func (s *Store) ListVideoAgentTasksForCustomer(customerID int64, limit int) ([]m
 		if err := rows.Scan(&t.ID, &t.PublicID, &t.CustomerID, &t.APIKeyID, &t.Scenario, &t.UpstreamTaskID, &t.Status, &t.Progress, &t.ResultURL, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListUnsettledVideoAgentTasks(cutoff time.Time, limit int) ([]model.VideoTask, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT t.id, t.public_id, t.customer_public_id, t.customer_id, t.api_key_id, k.public_id, COALESCE(t.scenario,''), COALESCE(t.upstream_task_id,''), COALESCE(t.upstream_request_id,''), t.usage_record_id, t.estimated_quota, t.needs_review, t.status, t.progress, COALESCE(t.result_url,''), COALESCE(t.error_message,''), t.created_at, t.updated_at
+		FROM video_tasks t
+		JOIN api_keys k ON k.id = t.api_key_id
+		WHERE t.usage_record_id = 0
+			AND COALESCE(t.upstream_task_id, '') != ''
+			AND t.created_at <= ?
+			AND t.task_type = 'video-agent'
+		ORDER BY t.created_at ASC
+		LIMIT ?`, cutoff, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.VideoTask{}
+	for rows.Next() {
+		var t model.VideoTask
+		var needsReview int
+		if err := rows.Scan(&t.ID, &t.PublicID, &t.CustomerPublicID, &t.CustomerID, &t.APIKeyID, &t.APIKeyPublicID, &t.Scenario, &t.UpstreamTaskID, &t.UpstreamRequestID, &t.UsageRecordID, &t.EstimatedQuota, &needsReview, &t.Status, &t.Progress, &t.ResultURL, &t.ErrorMessage, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, err
+		}
+		t.NeedsReview = needsReview == 1
 		out = append(out, t)
 	}
 	return out, rows.Err()
