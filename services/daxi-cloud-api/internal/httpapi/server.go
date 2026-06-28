@@ -105,6 +105,15 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /v1/models", s.handleModels)
 	s.mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
+
+	// video-agent 薄代理(镜像上游富 agent 多步流程,/v1/video-agent/*)
+	s.mux.HandleFunc("POST /v1/video-agent/drafts/generate", s.handleVideoAgentGenerateDraft)
+	s.mux.HandleFunc("GET /v1/video-agent/drafts/{id}", s.handleVideoAgentGetDraft)
+	s.mux.HandleFunc("POST /v1/video-agent/drafts/{id}/confirm", s.handleVideoAgentConfirmDraft)
+	s.mux.HandleFunc("POST /v1/video-agent/drafts/{id}/tasks", s.handleVideoAgentCreateTask)
+	s.mux.HandleFunc("GET /v1/video-agent/tasks", s.handleVideoAgentListTasks)
+	s.mux.HandleFunc("GET /v1/video-agent/tasks/{id}", s.handleVideoAgentGetTask)
+	s.mux.HandleFunc("GET /v1/video-agent/tasks/{id}/final-video", s.handleVideoAgentFinalVideo)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -97,6 +98,56 @@ func (c *Client) ProxyChat(ctx context.Context, body []byte, identity Identity, 
 		return nil, requestID, err
 	}
 	return resp, requestID, nil
+}
+
+// CallVideoAgent 转发一次富 video agent 调用到上游 /api/agents/video/* (Bearer 上游 key),
+// 强制注入 X-Reseller-* 归因头(沿用 ProxyChat 的注入模式)。upstreamPath 形如
+// "/agents/video/drafts/generate"。返回原始响应 + 本次生成的 requestID(= X-Reseller-Request-ID)。
+func (c *Client) CallVideoAgent(ctx context.Context, method, upstreamPath string, body []byte, identity Identity) (*http.Response, string, error) {
+	requestID := "req-" + time.Now().UTC().Format("20060102150405.000000000")
+	base := strings.TrimSuffix(c.cfg.UpstreamBaseURL, "/v1")
+	if c.cfg.VideoAgentBaseURL != "" {
+		base = strings.TrimRight(c.cfg.VideoAgentBaseURL, "/")
+	}
+	url := base + "/api" + upstreamPath
+
+	var reader io.Reader
+	if len(body) > 0 {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		return nil, requestID, err
+	}
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.UpstreamAPIKey)
+	req.Header.Set("X-Reseller-Code", c.cfg.ResellerCode)
+	req.Header.Set("X-Reseller-Customer-ID", identity.CustomerPublicID)
+	req.Header.Set("X-Reseller-Key-ID", identity.APIKeyPublicID)
+	req.Header.Set("X-Reseller-Scenario", defaultString(identity.Scenario, "video-agent"))
+	req.Header.Set("X-Reseller-Request-ID", requestID)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, requestID, err
+	}
+	return resp, requestID, nil
+}
+
+// ParseQuotaUsage 从富 agent 响应体提取 usage.quota(整数 quota 单位)。
+// 返回 (quota, found);found=false 表示响应未带 usage.quota(终态兜底场景)。
+func ParseQuotaUsage(body []byte) (int64, bool) {
+	var payload struct {
+		Usage *struct {
+			Quota *int64 `json:"quota"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || payload.Usage == nil || payload.Usage.Quota == nil {
+		return 0, false
+	}
+	return *payload.Usage.Quota, true
 }
 
 func (c *Client) ListModels(ctx context.Context) (ModelList, error) {

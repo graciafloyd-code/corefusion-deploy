@@ -57,9 +57,14 @@ type Customer struct {
 	Country   string    `json:"country"`
 	Email     string    `json:"email"`
 	Status    string    `json:"status"`
-	Balance   int64     `json:"balance_tokens"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	// Balance 是「模型额度(token)」钱包,chat 等按 token 扣。
+	// 注意:这是 token,不是 quota。video-agent 走独立的 BalanceQuota(quota 单位)钱包,两栏不混显/不混扣。
+	// 后续任务:chat 扣费对齐到 quota 后再考虑合并(见 project_daxi_video_agent 记忆)。
+	Balance int64 `json:"balance_tokens"`
+	// BalanceQuota 是「视频额度(quota)」钱包,video-agent 按 quota 扣(乙方案,与 Balance 物理隔离)。
+	BalanceQuota int64     `json:"balance_quota"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type APIKey struct {
@@ -208,6 +213,29 @@ type VideoTask struct {
 	ErrorMessage     string    `json:"error_message"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+	// video-agent 薄代理新增(多步流程归属 + 上游映射 + 计费)
+	CustomerID        int64  `json:"customer_id,omitempty"`
+	APIKeyID          int64  `json:"api_key_id,omitempty"`
+	Scenario          string `json:"scenario,omitempty"`
+	UpstreamTaskID    string `json:"upstream_task_id,omitempty"`
+	UpstreamRequestID string `json:"upstream_request_id,omitempty"`
+	UsageRecordID     int64  `json:"usage_record_id,omitempty"`
+	IdempotencyKey    string `json:"idempotency_key,omitempty"`
+	EstimatedQuota    int64  `json:"estimated_quota,omitempty"`
+	NeedsReview       bool   `json:"needs_review,omitempty"`
+}
+
+// VideoAgentDraft 是 DAXI 侧对上游富 agent draft 的轻量镜像(归属 + 幂等 + 上游 id 映射)。
+type VideoAgentDraft struct {
+	ID              int64     `json:"id"`
+	PublicID        string    `json:"draft_id"`
+	CustomerID      int64     `json:"-"`
+	APIKeyID        int64     `json:"-"`
+	Scenario        string    `json:"scenario,omitempty"`
+	UpstreamDraftID string    `json:"-"`
+	IdempotencyKey  string    `json:"-"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type PaymentRecord struct {

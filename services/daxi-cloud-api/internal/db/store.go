@@ -27,7 +27,7 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	conn, err := sql.Open("sqlite3", path+"?_busy_timeout=5000&_foreign_keys=on")
+	conn, err := sql.Open("sqlite3", path+"?_busy_timeout=5000&_foreign_keys=on&_journal_mode=WAL")
 	if err != nil {
 		return nil, err
 	}
@@ -214,6 +214,18 @@ func (s *Store) Migrate() error {
 			updated_at DATETIME NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_video_tasks_status_created ON video_tasks(status, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS video_agent_drafts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			public_id TEXT NOT NULL UNIQUE,
+			customer_id INTEGER NOT NULL,
+			api_key_id INTEGER NOT NULL,
+			scenario TEXT,
+			upstream_draft_id TEXT,
+			idempotency_key TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_video_agent_drafts_idem ON video_agent_drafts(customer_id, api_key_id, idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != ''`,
 		`CREATE TABLE IF NOT EXISTS payment_records (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			public_id TEXT NOT NULL UNIQUE,
@@ -237,6 +249,37 @@ func (s *Store) Migrate() error {
 	}
 	if err := s.ensureColumn("usage_records", "overspend_tokens", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
+	}
+	// video-agent 计费(乙方案):video 用独立 quota 钱包,与 chat 的 balance_tokens 物理隔离。
+	if err := s.ensureColumn("customers", "balance_quota", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// 多步 settle-once:每个上游计费事件一行,upstream_event_key 稳定键用于原子去重。
+	if err := s.ensureColumn("usage_records", "upstream_event_key", "TEXT"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("usage_records", "needs_review", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// 多步 settle-once 的原子去重点:同一上游计费事件只允许一行(照搬 token_recharges 部分唯一索引写法)。
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_event_key ON usage_records(upstream_event_key) WHERE upstream_event_key IS NOT NULL AND upstream_event_key != ''`); err != nil {
+		return err
+	}
+	// video-agent 任务镜像列(归属/上游映射/计费),存量库安全补列。
+	for _, col := range [][2]string{
+		{"customer_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"api_key_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"scenario", "TEXT"},
+		{"upstream_task_id", "TEXT"},
+		{"upstream_request_id", "TEXT"},
+		{"usage_record_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"idempotency_key", "TEXT"},
+		{"estimated_quota", "INTEGER NOT NULL DEFAULT 0"},
+		{"needs_review", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := s.ensureColumn("video_tasks", col[0], col[1]); err != nil {
+			return err
+		}
 	}
 	if err := s.seedTokenPlans(); err != nil {
 		return err
@@ -625,7 +668,7 @@ func (s *Store) ListCustomers(limit int) ([]model.Customer, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id, public_id, company, country, email, status, balance_tokens, created_at, updated_at FROM customers ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, err := s.db.Query(`SELECT id, public_id, company, country, email, status, balance_tokens, balance_quota, created_at, updated_at FROM customers ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -633,7 +676,7 @@ func (s *Store) ListCustomers(limit int) ([]model.Customer, error) {
 	var out []model.Customer
 	for rows.Next() {
 		var item model.Customer
-		if err := rows.Scan(&item.ID, &item.PublicID, &item.Company, &item.Country, &item.Email, &item.Status, &item.Balance, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.PublicID, &item.Company, &item.Country, &item.Email, &item.Status, &item.Balance, &item.BalanceQuota, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, item)
@@ -642,9 +685,9 @@ func (s *Store) ListCustomers(limit int) ([]model.Customer, error) {
 }
 
 func (s *Store) GetCustomer(publicID string) (model.Customer, error) {
-	row := s.db.QueryRow(`SELECT id, public_id, company, country, email, status, balance_tokens, created_at, updated_at FROM customers WHERE public_id = ?`, publicID)
+	row := s.db.QueryRow(`SELECT id, public_id, company, country, email, status, balance_tokens, balance_quota, created_at, updated_at FROM customers WHERE public_id = ?`, publicID)
 	var item model.Customer
-	if err := row.Scan(&item.ID, &item.PublicID, &item.Company, &item.Country, &item.Email, &item.Status, &item.Balance, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.PublicID, &item.Company, &item.Country, &item.Email, &item.Status, &item.Balance, &item.BalanceQuota, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return model.Customer{}, err
 	}
 	return item, nil
@@ -652,6 +695,15 @@ func (s *Store) GetCustomer(publicID string) (model.Customer, error) {
 
 func (s *Store) UpdateCustomerBalance(publicID string, balance int64) error {
 	result, err := s.db.Exec(`UPDATE customers SET balance_tokens = ?, updated_at = ? WHERE public_id = ?`, balance, time.Now().UTC(), publicID)
+	if err != nil {
+		return err
+	}
+	return checkAffected(result)
+}
+
+// UpdateCustomerQuotaBalance 设置「视频额度(quota)」钱包(乙方案,与 balance_tokens 物理隔离)。
+func (s *Store) UpdateCustomerQuotaBalance(publicID string, balance int64) error {
+	result, err := s.db.Exec(`UPDATE customers SET balance_quota = ?, updated_at = ? WHERE public_id = ?`, balance, time.Now().UTC(), publicID)
 	if err != nil {
 		return err
 	}
@@ -741,12 +793,12 @@ func (s *Store) UpdateAPIKeyStatus(publicID, status string) error {
 func (s *Store) FindAPIKey(rawKey string) (model.APIKey, model.Customer, error) {
 	hash := hashKey(strings.TrimSpace(rawKey))
 	row := s.db.QueryRow(`SELECT k.id, k.public_id, k.customer_id, k.name, k.key_hash, k.key_prefix, k.scopes, k.status, k.created_at, k.updated_at,
-		c.id, c.public_id, c.company, c.country, c.email, c.status, c.balance_tokens, c.created_at, c.updated_at
+		c.id, c.public_id, c.company, c.country, c.email, c.status, c.balance_tokens, c.balance_quota, c.created_at, c.updated_at
 		FROM api_keys k JOIN customers c ON c.id = k.customer_id WHERE k.key_hash = ?`, hash)
 	var key model.APIKey
 	var customer model.Customer
 	if err := row.Scan(&key.ID, &key.PublicID, &key.CustomerID, &key.Name, &key.KeyHash, &key.KeyPrefix, &key.Scopes, &key.Status, &key.CreatedAt, &key.UpdatedAt,
-		&customer.ID, &customer.PublicID, &customer.Company, &customer.Country, &customer.Email, &customer.Status, &customer.Balance, &customer.CreatedAt, &customer.UpdatedAt); err != nil {
+		&customer.ID, &customer.PublicID, &customer.Company, &customer.Country, &customer.Email, &customer.Status, &customer.Balance, &customer.BalanceQuota, &customer.CreatedAt, &customer.UpdatedAt); err != nil {
 		return model.APIKey{}, model.Customer{}, err
 	}
 	return key, customer, nil
@@ -806,6 +858,88 @@ func (s *Store) DecreaseCustomerBalance(customerID, tokens int64) (int64, error)
 	}
 	committed = true
 	return overspend, nil
+}
+
+// ErrVideoEventAlreadySettled 表示该上游计费事件此前已结算(幂等命中)。
+var ErrVideoEventAlreadySettled = errors.New("video billing event already settled")
+
+// SettleVideoBillingEvent 对一次上游计费事件做「恰好一次」结算(多步流程:draft 生成一次、video 任务一次)。
+// eventKey 是稳定的上游事件键(如 "draft:<upstream_draft_id>" / "task:<upstream_task_id>"),
+// 不能用每次轮询不同的 request id,否则会重复扣。
+// 原子去重靠 usage_records.upstream_event_key 唯一索引;并发/透传重试只会成功插入一条。
+// 扣的是 video 专用钱包 customers.balance_quota(乙方案,与 chat 的 balance_tokens 物理隔离),
+// 单位为 quota;余额不足 floor 到 0 并把差额记入 overspend_tokens。
+// 返回 (overspend, settled);settled=false 表示该事件此前已结算,未重复扣。
+// 返回 (usageRecordID, overspend, settled, err)。settled=false(已结算)时 usageRecordID=0。
+func (s *Store) SettleVideoBillingEvent(eventKey string, customerID, apiKeyID int64, scenario string, quota int64, needsReview bool) (int64, int64, bool, error) {
+	if strings.TrimSpace(eventKey) == "" {
+		return 0, 0, false, fmt.Errorf("eventKey is required")
+	}
+	if quota < 0 {
+		quota = 0
+	}
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return 0, 0, false, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
+	now := time.Now().UTC()
+	review := 0
+	if needsReview {
+		review = 1
+	}
+	// 原子置位:唯一索引命中即已结算 → 幂等短路,禁止 check-then-write。
+	res, err := conn.ExecContext(ctx, `INSERT INTO usage_records(request_id, customer_id, api_key_id, scenario, model, prompt_tokens, completion_tokens, total_tokens, overspend_tokens, status_code, created_at, upstream_event_key, needs_review)
+		VALUES (?, ?, ?, ?, '', 0, 0, ?, 0, 200, ?, ?, ?)`,
+		eventKey, customerID, apiKeyID, scenario, quota, now, eventKey, review)
+	if err != nil {
+		// 仅当冲突确实来自 upstream_event_key 唯一索引时才判为「已结算」(幂等短路);
+		// 任何其它错误(含别的唯一约束/DB 故障)一律上抛,绝不误判为已结算而漏扣。
+		if isEventKeyConflict(err) {
+			if _, cErr := conn.ExecContext(ctx, `COMMIT`); cErr != nil {
+				return 0, 0, false, cErr
+			}
+			committed = true
+			return 0, 0, false, nil
+		}
+		return 0, 0, false, err
+	}
+	recID, _ := res.LastInsertId()
+
+	var balance int64
+	if err := conn.QueryRowContext(ctx, `SELECT balance_quota FROM customers WHERE id = ?`, customerID).Scan(&balance); err != nil {
+		return 0, 0, false, err
+	}
+	overspend := int64(0)
+	next := balance - quota
+	if next < 0 {
+		overspend = -next
+		next = 0
+	}
+	if _, err := conn.ExecContext(ctx, `UPDATE customers SET balance_quota = ?, updated_at = ? WHERE id = ?`, next, now, customerID); err != nil {
+		return 0, 0, false, err
+	}
+	if overspend > 0 {
+		if _, err := conn.ExecContext(ctx, `UPDATE usage_records SET overspend_tokens = ? WHERE id = ?`, overspend, recID); err != nil {
+			return 0, 0, false, err
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return 0, 0, false, err
+	}
+	committed = true
+	return recID, overspend, true, nil
 }
 
 func (s *Store) UsageSummary() (model.UsageSummary, error) {
@@ -1148,6 +1282,112 @@ func (s *Store) UpdateVideoTask(publicID string, task model.VideoTask) error {
 	return checkAffected(result)
 }
 
+// ---- video-agent 薄代理:draft / task 镜像 CRUD ----
+
+func (s *Store) getVideoAgentDraftByIdem(customerID, apiKeyID int64, idem string) (model.VideoAgentDraft, error) {
+	var d model.VideoAgentDraft
+	err := s.db.QueryRow(`SELECT id, public_id, customer_id, api_key_id, scenario, upstream_draft_id, idempotency_key, created_at, updated_at FROM video_agent_drafts WHERE customer_id = ? AND api_key_id = ? AND idempotency_key = ?`, customerID, apiKeyID, idem).
+		Scan(&d.ID, &d.PublicID, &d.CustomerID, &d.APIKeyID, &d.Scenario, &d.UpstreamDraftID, &d.IdempotencyKey, &d.CreatedAt, &d.UpdatedAt)
+	return d, err
+}
+
+// UpsertVideoAgentDraft 落 draft 归属镜像;带 idempotency_key 时命中已存则返回原记录(created=false)。
+func (s *Store) UpsertVideoAgentDraft(customerID, apiKeyID int64, scenario, upstreamDraftID, idem string) (model.VideoAgentDraft, bool, error) {
+	if strings.TrimSpace(idem) != "" {
+		if existing, err := s.getVideoAgentDraftByIdem(customerID, apiKeyID, idem); err == nil {
+			return existing, false, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return model.VideoAgentDraft{}, false, err
+		}
+	}
+	now := time.Now().UTC()
+	item := model.VideoAgentDraft{CustomerID: customerID, APIKeyID: apiKeyID, Scenario: scenario, UpstreamDraftID: upstreamDraftID, IdempotencyKey: idem, CreatedAt: now, UpdatedAt: now}
+	result, err := retryPublicID(func() { item.PublicID = newPublicID("DXVD") }, func() (sql.Result, error) {
+		return s.db.Exec(`INSERT INTO video_agent_drafts(public_id, customer_id, api_key_id, scenario, upstream_draft_id, idempotency_key, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`,
+			item.PublicID, item.CustomerID, item.APIKeyID, item.Scenario, item.UpstreamDraftID, item.IdempotencyKey, item.CreatedAt, item.UpdatedAt)
+	})
+	if err != nil {
+		if isUniqueConstraint(err) && strings.TrimSpace(idem) != "" {
+			if existing, qErr := s.getVideoAgentDraftByIdem(customerID, apiKeyID, idem); qErr == nil {
+				return existing, false, nil
+			}
+		}
+		return model.VideoAgentDraft{}, false, err
+	}
+	item.ID, _ = result.LastInsertId()
+	return item, true, nil
+}
+
+// GetVideoAgentDraftForCustomer 按 DAXI public_id 取 draft 并校验归属。
+func (s *Store) GetVideoAgentDraftForCustomer(publicID string, customerID int64) (model.VideoAgentDraft, error) {
+	var d model.VideoAgentDraft
+	err := s.db.QueryRow(`SELECT id, public_id, customer_id, api_key_id, scenario, upstream_draft_id, idempotency_key, created_at, updated_at FROM video_agent_drafts WHERE public_id = ? AND customer_id = ?`, publicID, customerID).
+		Scan(&d.ID, &d.PublicID, &d.CustomerID, &d.APIKeyID, &d.Scenario, &d.UpstreamDraftID, &d.IdempotencyKey, &d.CreatedAt, &d.UpdatedAt)
+	return d, err
+}
+
+// CreateVideoAgentTaskMapping 落 video 任务镜像(归属 + 上游映射 + 预估 quota)。
+func (s *Store) CreateVideoAgentTaskMapping(t *model.VideoTask) error {
+	now := time.Now().UTC()
+	t.TaskType = defaultString(t.TaskType, "video-agent")
+	t.Status = defaultString(t.Status, "Queued")
+	t.Language = defaultString(t.Language, "en")
+	t.CreatedAt = now
+	t.UpdatedAt = now
+	result, err := retryPublicID(func() { t.PublicID = newPublicID("DXV") }, func() (sql.Result, error) {
+		return s.db.Exec(`INSERT INTO video_tasks(public_id, task_type, customer_public_id, customer_id, api_key_id, scenario, upstream_task_id, upstream_request_id, estimated_quota, title, prompt, language, status, progress, created_at, updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			t.PublicID, t.TaskType, t.CustomerPublicID, t.CustomerID, t.APIKeyID, t.Scenario, t.UpstreamTaskID, t.UpstreamRequestID, t.EstimatedQuota, t.Title, t.Prompt, t.Language, t.Status, t.Progress, t.CreatedAt, t.UpdatedAt)
+	})
+	if err != nil {
+		return err
+	}
+	t.ID, _ = result.LastInsertId()
+	return nil
+}
+
+// GetVideoAgentTaskForCustomer 取任务 + 校验归属。
+func (s *Store) GetVideoAgentTaskForCustomer(publicID string, customerID int64) (model.VideoTask, error) {
+	var t model.VideoTask
+	var needsReview int
+	err := s.db.QueryRow(`SELECT id, public_id, customer_id, api_key_id, COALESCE(scenario,''), COALESCE(upstream_task_id,''), COALESCE(upstream_request_id,''), usage_record_id, estimated_quota, needs_review, status, progress, COALESCE(result_url,''), COALESCE(error_message,''), created_at, updated_at FROM video_tasks WHERE public_id = ? AND customer_id = ?`, publicID, customerID).
+		Scan(&t.ID, &t.PublicID, &t.CustomerID, &t.APIKeyID, &t.Scenario, &t.UpstreamTaskID, &t.UpstreamRequestID, &t.UsageRecordID, &t.EstimatedQuota, &needsReview, &t.Status, &t.Progress, &t.ResultURL, &t.ErrorMessage, &t.CreatedAt, &t.UpdatedAt)
+	t.NeedsReview = needsReview == 1
+	return t, err
+}
+
+// ListVideoAgentTasksForCustomer 列出本客户任务。
+func (s *Store) ListVideoAgentTasksForCustomer(customerID int64, limit int) ([]model.VideoTask, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`SELECT id, public_id, customer_id, api_key_id, COALESCE(scenario,''), COALESCE(upstream_task_id,''), status, progress, COALESCE(result_url,''), created_at, updated_at FROM video_tasks WHERE customer_id = ? ORDER BY created_at DESC LIMIT ?`, customerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.VideoTask{}
+	for rows.Next() {
+		var t model.VideoTask
+		if err := rows.Scan(&t.ID, &t.PublicID, &t.CustomerID, &t.APIKeyID, &t.Scenario, &t.UpstreamTaskID, &t.Status, &t.Progress, &t.ResultURL, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// UpdateVideoAgentTaskState 轮询后回写本地镜像(状态/进度/result/usage_record/needs_review)。
+func (s *Store) UpdateVideoAgentTaskState(publicID, status string, progress int, resultURL string, usageRecordID int64, needsReview bool) error {
+	review := 0
+	if needsReview {
+		review = 1
+	}
+	_, err := s.db.Exec(`UPDATE video_tasks SET status = ?, progress = ?, result_url = ?, usage_record_id = CASE WHEN ? > 0 THEN ? ELSE usage_record_id END, needs_review = ?, updated_at = ? WHERE public_id = ?`,
+		status, progress, resultURL, usageRecordID, usageRecordID, review, time.Now().UTC(), publicID)
+	return err
+}
+
 func (s *Store) CreatePaymentRecord(item *model.PaymentRecord) error {
 	now := time.Now().UTC()
 	item.PublicID = newPublicID("DXY")
@@ -1351,6 +1591,12 @@ func retryPublicID(assign func(), insert func() (sql.Result, error)) (sql.Result
 
 func isUniqueConstraint(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// isEventKeyConflict 精确判定「上游计费事件唯一键冲突」(= 已结算),
+// 只认 upstream_event_key 这一列,避免把别的唯一约束/真错误误判为已结算导致漏扣。
+func isEventKeyConflict(err error) bool {
+	return isUniqueConstraint(err) && strings.Contains(err.Error(), "upstream_event_key")
 }
 
 func defaultString(value, fallback string) string {
