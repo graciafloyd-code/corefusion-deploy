@@ -562,12 +562,12 @@
     }
 
     table.innerHTML = `
-      <div class="ops-row ops-row-head"><span>Customer</span><span>Country</span><span>Balance</span><span>Status</span></div>
+      <div class="ops-row ops-row-head"><span>Customer</span><span>Country</span><span>Balance (token / quota)</span><span>Status</span></div>
       ${customers.map((customer) => `
         <div class="ops-row">
           <span>${customer.company}<small>${customer.public_id}</small></span>
           <span>${customer.country || '-'}</span>
-          <span>${customer.balance_tokens || 0}</span>
+          <span>${customer.balance_tokens ?? 0} <small>token</small> · ${customer.balance_quota ?? 0} <small>quota</small></span>
           <span><mark>${customer.status || 'Active'}</mark></span>
         </div>
       `).join('')}
@@ -759,7 +759,8 @@
       panel.innerHTML = `
         <div class="detail-grid">
           <div><span>Customer</span><strong>${customer.company}</strong><small>${customer.public_id}</small></div>
-          <div><span>Balance</span><strong>${customer.balance_tokens}</strong><small>available tokens</small></div>
+          <div><span>Model credits (token)</span><strong>${customer.balance_tokens ?? 0}</strong><small>model API · token</small></div>
+          <div><span>Video credits (quota)</span><strong>${customer.balance_quota ?? 0}</strong><small>video agent · quota</small></div>
           <div><span>API Keys</span><strong>${detail.api_keys.length}</strong><small>issued keys</small></div>
           <div><span>Total Usage</span><strong>${detail.usage.total_tokens}</strong><small>${detail.usage.request_count} requests</small></div>
         </div>
