@@ -745,6 +745,23 @@
   border-top: 2px solid var(--line, #e5e7eb);
 }
 
+.recon-diff-wrap { margin-bottom: 20px; }
+
+.recon-diff-summary {
+  margin: 6px 0 10px;
+  font-size: 13px;
+  color: var(--ink-2, #475569);
+}
+
+.ops-row.recon-diff-row {
+  grid-template-columns: 1.4fr .8fr .9fr .8fr .5fr;
+  min-width: 620px;
+}
+
+.ops-row.recon-diff-row.recon-mismatch {
+  background: #fff4e5;
+}
+
 .ops-row.admin-row {
   grid-template-columns: 1.2fr .8fr .7fr .9fr;
   min-width: 680px;

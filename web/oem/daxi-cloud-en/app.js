@@ -820,10 +820,39 @@
       <div class="ops-row recon-up-row recon-total"><span>Total net</span><span></span><span></span><span>${fmtQuota(payload.total_net)}</span><span></span></div>`;
   }
 
+  function renderReconDiff(payload) {
+    const sum = document.querySelector('[data-recon-diff-summary]');
+    if (sum) {
+      const auth = payload && payload.upstream_authoritative;
+      const mm = (payload && payload.mismatch_count) || 0;
+      sum.innerHTML = `源:${payload && payload.upstream_source || '-'} ` +
+        `<mark>${auth ? 'authoritative' : 'temp/smoke'}</mark> · ` +
+        `DAXI 合计 ${fmtQuota(payload && payload.total_daxi_net)} · 上游合计 ${fmtQuota(payload && payload.total_upstream_net)} · ` +
+        `净差 ${fmtQuota(payload && payload.total_diff)} · 不对平客户 <strong>${mm}</strong>`;
+    }
+    const el = document.querySelector('[data-recon-diff]');
+    if (!el) return;
+    const rows = (payload && payload.rows) || [];
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty-state"><strong>No rows.</strong></div>';
+      return;
+    }
+    el.innerHTML = `
+      <div class="ops-row ops-row-head recon-diff-row"><span>Customer</span><span>DAXI net</span><span>Upstream net</span><span>Diff (A−B)</span><span>Match</span></div>
+      ${rows.map((r) => `
+        <div class="ops-row recon-diff-row${r.match ? '' : ' recon-mismatch'}">
+          <span>${r.company || r.customer_public_id}<small>${r.customer_public_id}</small></span>
+          <span>${fmtQuota(r.daxi_net_quota)}</span>
+          <span>${fmtQuota(r.upstream_net_quota)}</span>
+          <span>${fmtQuota(r.diff)}</span>
+          <span>${r.match ? '✓' : '✗'}</span>
+        </div>`).join('')}`;
+  }
+
   async function loadRecon() {
     const daxiEl = document.querySelector('[data-recon-daxi]');
     if (!daxiEl) return;
-    // 两个查询各自独立 try/catch:一个失败(如上游不可达)不影响另一个出数。
+    // 三个查询各自独立 try/catch:一个失败(如上游不可达)不影响其它出数。
     try {
       renderReconDaxi(await apiJSON('/admin/video-recon/daxi', { admin: true }));
     } catch (error) {
@@ -834,6 +863,12 @@
       renderReconUpstream(await apiJSON('/admin/video-recon/upstream', { admin: true }));
     } catch (error) {
       if (upEl) upEl.innerHTML = `<div class="empty-state"><strong>Query B failed.</strong><span>${error.message}</span></div>`;
+    }
+    const diffEl = document.querySelector('[data-recon-diff]');
+    try {
+      renderReconDiff(await apiJSON('/admin/video-recon/diff', { admin: true }));
+    } catch (error) {
+      if (diffEl) diffEl.innerHTML = `<div class="empty-state"><strong>Diff failed.</strong><span>${error.message}</span></div>`;
     }
   }
 
