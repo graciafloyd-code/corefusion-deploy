@@ -72,7 +72,7 @@ func modelListResponse(models ...string) *http.Response {
 func jsonUsageTransport(t *testing.T) http.RoundTripper {
 	t.Helper()
 	return roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		return mockResponse("application/json", `{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`), nil
+		return mockResponse("application/json", `{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"quota":2}}`), nil
 	})
 }
 
@@ -100,7 +100,7 @@ func currentBalance(t *testing.T, store *db.Store, rawKey string) int64 {
 
 func TestProxyNonStreamingDeductsBalance(t *testing.T) {
 	srv, store := newTestServer(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		return mockResponse("application/json", `{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`), nil
+		return mockResponse("application/json", `{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12,"quota":12}}`), nil
 	}))
 	raw := seedCustomerKey(t, store, 1000)
 
@@ -114,7 +114,7 @@ func TestProxyNonStreamingDeductsBalance(t *testing.T) {
 	}
 	bal := currentBalance(t, store, raw)
 	if bal != 1000-12 {
-		t.Fatalf("balance = %d, want %d", bal, 1000-12)
+		t.Fatalf("balance = %d, want %d(按 usage.quota 扣)", bal, 1000-12)
 	}
 }
 
@@ -171,8 +171,8 @@ func TestChatQuotaZeroExplicitChargesZeroNoFallback(t *testing.T) {
 	}
 }
 
-// 无 quota 字段 → 回退按 token 扣(防御式,上游未覆盖时)。
-func TestChatFallsBackWhenQuotaAbsent(t *testing.T) {
+// 无 quota 字段(上游回归)→ 不再回退按 token 扣,按 usage.Quota(0)扣 0(余额不变)+ 打 WARN。
+func TestChatNoQuotaChargesZeroNoTokenFallback(t *testing.T) {
 	srv, store := newTestServer(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return mockResponse("application/json", `{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`), nil
 	}))
@@ -182,8 +182,8 @@ func TestChatFallsBackWhenQuotaAbsent(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash","messages":[]}`))
 	req.Header.Set("Authorization", "Bearer "+raw)
 	srv.Router().ServeHTTP(rec, req)
-	if bal := currentBalance(t, store, raw); bal != 1000-15 {
-		t.Fatalf("balance=%d want %d(无 quota 字段应回退扣 total_tokens=15)", bal, 1000-15)
+	if bal := currentBalance(t, store, raw); bal != 1000 {
+		t.Fatalf("balance=%d want 1000(无 quota 字段不再回退扣 token,应扣 0)", bal)
 	}
 }
 
@@ -249,7 +249,7 @@ func TestProxyStreamingDeductsBalanceAndInjectsUsage(t *testing.T) {
 			"",
 			"data: {\"choices\":[{\"delta\":{\"content\":\"llo\"}}]}",
 			"",
-			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30}}",
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30,\"quota\":30}}",
 			"",
 			"data: [DONE]",
 			"",
@@ -348,7 +348,7 @@ func TestUnknownScenarioFallsBackToModelAPIRoute(t *testing.T) {
 	var gotScenario string
 	srv, store := newTestServer(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		gotScenario = r.Header.Get("X-Reseller-Scenario")
-		return mockResponse("application/json", `{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`), nil
+		return mockResponse("application/json", `{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"quota":2}}`), nil
 	}))
 	raw := seedCustomerKey(t, store, 1000)
 
@@ -389,7 +389,7 @@ func TestStreamingFloorsBalanceAndRecordsOverspend(t *testing.T) {
 	srv, store := newTestServer(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body := bytes.NewBufferString("")
 		_, _ = body.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
-		_, _ = body.WriteString("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30}}\n\n")
+		_, _ = body.WriteString("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30,\"quota\":30}}\n\n")
 		_, _ = body.WriteString("data: [DONE]\n\n")
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -430,7 +430,7 @@ func TestFirstPhaseEndToEndFlow(t *testing.T) {
 		upstreamKeyID = r.Header.Get("X-Reseller-Key-ID")
 		upstreamScenario = r.Header.Get("X-Reseller-Scenario")
 		upstreamAuth = r.Header.Get("Authorization")
-		return mockResponse("application/json", `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":50,"completion_tokens":73,"total_tokens":123}}`), nil
+		return mockResponse("application/json", `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":50,"completion_tokens":73,"total_tokens":123,"quota":123}}`), nil
 	}))
 
 	rec := doJSON(t, srv, http.MethodPost, "/public/leads", "", `{"company":"DAXI Client","email":"ops@example.com","notes":"OEM launch"}`)
