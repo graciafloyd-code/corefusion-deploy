@@ -773,6 +773,70 @@
     }
   }
 
+  function fmtQuota(n) {
+    return (Number(n) || 0).toLocaleString();
+  }
+
+  function renderReconDaxi(payload) {
+    const el = document.querySelector('[data-recon-daxi]');
+    if (!el) return;
+    const rows = (payload && payload.by_customer) || [];
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty-state"><strong>No video charges yet.</strong><span>Settled video tasks appear here.</span></div>';
+      return;
+    }
+    el.innerHTML = `
+      <div class="ops-row ops-row-head recon-row"><span>Customer</span><span>Net quota</span><span>Overspend</span><span>Records</span></div>
+      ${rows.map((r) => `
+        <div class="ops-row recon-row">
+          <span>${r.company || r.customer_public_id}<small>${r.customer_public_id}</small></span>
+          <span>${fmtQuota(r.net_quota)}</span>
+          <span>${fmtQuota(r.overspend_quota)}${r.needs_review ? ` <mark>review ${r.needs_review}</mark>` : ''}</span>
+          <span>${r.records}</span>
+        </div>`).join('')}
+      <div class="ops-row recon-row recon-total"><span>Total net</span><span>${fmtQuota(payload.total_net)}</span><span></span><span></span></div>`;
+  }
+
+  function renderReconUpstream(payload) {
+    const cav = document.querySelector('[data-recon-caveat]');
+    if (cav) cav.textContent = payload && payload.caveat ? `⚠ ${payload.caveat}` : '';
+    const el = document.querySelector('[data-recon-upstream]');
+    if (!el) return;
+    const rows = (payload && payload.by_customer) || [];
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty-state"><strong>No upstream records.</strong><span>Smoke-only source.</span></div>';
+      return;
+    }
+    el.innerHTML = `
+      <div class="ops-row ops-row-head recon-up-row"><span>Customer ID</span><span>Consume</span><span>Refund</span><span>Net</span><span>Recs</span></div>
+      ${rows.map((r) => `
+        <div class="ops-row recon-up-row">
+          <span>${r.reseller_customer_id}</span>
+          <span>${fmtQuota(r.consume_quota)}</span>
+          <span>${fmtQuota(r.refund_quota)}</span>
+          <span>${fmtQuota(r.net_quota)}</span>
+          <span>${r.records}</span>
+        </div>`).join('')}
+      <div class="ops-row recon-up-row recon-total"><span>Total net</span><span></span><span></span><span>${fmtQuota(payload.total_net)}</span><span></span></div>`;
+  }
+
+  async function loadRecon() {
+    const daxiEl = document.querySelector('[data-recon-daxi]');
+    if (!daxiEl) return;
+    // 两个查询各自独立 try/catch:一个失败(如上游不可达)不影响另一个出数。
+    try {
+      renderReconDaxi(await apiJSON('/admin/video-recon/daxi', { admin: true }));
+    } catch (error) {
+      daxiEl.innerHTML = `<div class="empty-state"><strong>Query A failed.</strong><span>${error.message}</span></div>`;
+    }
+    const upEl = document.querySelector('[data-recon-upstream]');
+    try {
+      renderReconUpstream(await apiJSON('/admin/video-recon/upstream', { admin: true }));
+    } catch (error) {
+      if (upEl) upEl.innerHTML = `<div class="empty-state"><strong>Query B failed.</strong><span>${error.message}</span></div>`;
+    }
+  }
+
   async function renderAdminConsole() {
     const table = document.querySelector('[data-lead-table]');
     if (!table) return;
@@ -791,6 +855,9 @@
       renderVideoTaskTable(data.videoTasks);
       renderPaymentTable(data.payments);
       renderAdminUserTable(data.adminUsers);
+      const reconBtn = document.querySelector('[data-recon-refresh]');
+      if (reconBtn) reconBtn.onclick = loadRecon;
+      loadRecon();
       const detailSelect = document.querySelector('[data-customer-detail-select]');
       if (detailSelect && detailSelect.value) renderCustomerDetail(detailSelect.value);
       const status = document.querySelector('[data-console-status]');

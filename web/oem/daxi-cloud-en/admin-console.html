@@ -175,6 +175,28 @@
           <div class="ops-table wide-table" data-usage-record-table></div>
         </section>
 
+        <section class="console-panel" id="recon">
+          <div class="console-panel-head">
+            <div>
+              <p class="eyebrow">VIDEO RECONCILIATION</p>
+              <h2>Video billing reconciliation (step 1: two queries)</h2>
+              <p>Per-customer video quota: DAXI's own ledger vs upstream reseller usage. Auto-diff comes later — for now compare manually. Quota unit; both should match per customer (DAXI net = upstream consume − refund).</p>
+            </div>
+            <button class="btn btn-secondary" type="button" data-recon-refresh>Refresh</button>
+          </div>
+          <div class="recon-grid">
+            <div>
+              <h3>A · DAXI ledger (authoritative, per customer)</h3>
+              <div class="ops-table" data-recon-daxi></div>
+            </div>
+            <div>
+              <h3>B · Upstream reseller usage</h3>
+              <div class="recon-caveat" data-recon-caveat></div>
+              <div class="ops-table" data-recon-upstream></div>
+            </div>
+          </div>
+        </section>
+
         <section class="console-panel console-settings" id="settings">
           <div class="console-panel-head">
             <div>
