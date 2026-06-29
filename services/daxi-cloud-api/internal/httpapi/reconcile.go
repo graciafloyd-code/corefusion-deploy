@@ -6,10 +6,33 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"daxi-cloud-api/internal/model"
 )
+
+// resolveReconWindow 统一时间窗口口径:入参 start/end 为 Unix 秒(缺省 0 / 远期 = 全时段)。
+// 上游正式端点要求 Unix 秒;DAXI usage_records.created_at 是 RFC3339 文本(按字符串可比 = 时序可比),
+// 故同时返回两种格式,保证 A/B 用同一窗口。
+func resolveReconWindow(r *http.Request) (unixStart, unixEnd, rfcStart, rfcEnd string) {
+	si := parseUnixDefault(r.URL.Query().Get("start"), 0)
+	ei := parseUnixDefault(r.URL.Query().Get("end"), 9999999999)
+	return strconv.FormatInt(si, 10), strconv.FormatInt(ei, 10),
+		time.Unix(si, 0).UTC().Format(time.RFC3339), time.Unix(ei, 0).UTC().Format(time.RFC3339)
+}
+
+func parseUnixDefault(s string, def int64) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return v
+	}
+	return def
+}
 
 // 视频对账(reconciliation)—— 第一步:两个查询各自能出数,自动比对差异留待第二步。
 // 口径:DAXI 每客户净额(Query A,自有 usage_records)应 = 上游该 customer_id 的(消费−退款)净额(Query B)。
@@ -20,9 +43,8 @@ const upstreamReconCaveat = "TEMPORARY/SMOKE-ONLY: 数据来自上游 /api/log/t
 
 // GET /admin/video-recon/daxi —— Query A:DAXI 自有 usage_records 按 customer_id 净额。
 func (s *Server) handleVideoReconDaxi(w http.ResponseWriter, r *http.Request) {
-	start := strings.TrimSpace(r.URL.Query().Get("start"))
-	end := strings.TrimSpace(r.URL.Query().Get("end"))
-	rows, err := s.store.VideoReconByCustomer(start, end)
+	unixStart, unixEnd, rfcStart, rfcEnd := resolveReconWindow(r)
+	rows, err := s.store.VideoReconByCustomer(rfcStart, rfcEnd)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to query daxi usage")
 		return
@@ -32,20 +54,19 @@ func (s *Server) handleVideoReconDaxi(w http.ResponseWriter, r *http.Request) {
 		total += x.NetQuota
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"source":       "daxi.usage_records",
-		"unit":         "quota",
-		"window":       map[string]string{"start": start, "end": end},
-		"total_net":    total,
-		"by_customer":  rows,
+		"source":      "daxi.usage_records",
+		"unit":        "quota",
+		"window":      map[string]string{"start": unixStart, "end": unixEnd},
+		"total_net":   total,
+		"by_customer": rows,
 	})
 }
 
 // GET /admin/video-recon/upstream —— Query B(临时版):拉上游 /log/token 本地聚合。
 func (s *Server) handleVideoReconUpstream(w http.ResponseWriter, r *http.Request) {
-	start := strings.TrimSpace(r.URL.Query().Get("start"))
-	end := strings.TrimSpace(r.URL.Query().Get("end"))
+	unixStart, unixEnd, _, _ := resolveReconWindow(r)
 	scenario := strings.TrimSpace(r.URL.Query().Get("scenario"))
-	rows, authoritative, source, caveat, err := s.upstreamReconRows(r.Context(), start, end, scenario)
+	rows, authoritative, source, caveat, err := s.upstreamReconRows(r.Context(), unixStart, unixEnd, scenario)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -118,16 +139,15 @@ func parseResellerUsageSummary(body []byte) ([]model.VideoReconUpstreamRow, erro
 // 口径:DAXI 每客户净额(A,SUM(total_tokens))应 = 上游该 customer_id 的(消费−退款)净额(B)。
 // 匹配键:DAXI customer_public_id == 上游 reseller_customer_id(DAXI 发的 X-Reseller-Customer-ID 即 customer.PublicID)。
 func (s *Server) handleVideoReconDiff(w http.ResponseWriter, r *http.Request) {
-	start := strings.TrimSpace(r.URL.Query().Get("start"))
-	end := strings.TrimSpace(r.URL.Query().Get("end"))
+	unixStart, unixEnd, rfcStart, rfcEnd := resolveReconWindow(r)
 	scenario := strings.TrimSpace(r.URL.Query().Get("scenario"))
 
-	daxiRows, err := s.store.VideoReconByCustomer(start, end)
+	daxiRows, err := s.store.VideoReconByCustomer(rfcStart, rfcEnd)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to query daxi usage")
 		return
 	}
-	upRows, authoritative, source, _, err := s.upstreamReconRows(r.Context(), start, end, scenario)
+	upRows, authoritative, source, _, err := s.upstreamReconRows(r.Context(), unixStart, unixEnd, scenario)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -173,7 +193,7 @@ func (s *Server) handleVideoReconDiff(w http.ResponseWriter, r *http.Request) {
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"unit":                  "quota",
-		"window":                map[string]string{"start": start, "end": end},
+		"window":                map[string]string{"start": unixStart, "end": unixEnd},
 		"upstream_source":       source,
 		"upstream_authoritative": authoritative,
 		"total_daxi_net":        totalDaxi,
