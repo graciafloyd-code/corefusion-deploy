@@ -155,6 +155,26 @@ type TokenRecharge struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// VideoReconDaxiRow 是视频对账 Query A 的每客户一行(DAXI 自有 usage_records 净额)。
+type VideoReconDaxiRow struct {
+	CustomerID       int64  `json:"customer_id"`
+	CustomerPublicID string `json:"customer_public_id"`
+	Company          string `json:"company"`
+	NetQuota         int64  `json:"net_quota"`       // = SUM(total_tokens),DAXI 记录的视频消费净额
+	OverspendQuota   int64  `json:"overspend_quota"` // 超出客户余额未实扣到的部分(信息项)
+	Records          int64  `json:"records"`
+	NeedsReview      int64  `json:"needs_review"`
+}
+
+// VideoReconUpstreamRow 是视频对账 Query B 的每客户一行(上游 reseller 日志,消费−退款净额)。
+type VideoReconUpstreamRow struct {
+	ResellerCustomerID string `json:"reseller_customer_id"`
+	ConsumeQuota       int64  `json:"consume_quota"` // type=2 消费合计
+	RefundQuota        int64  `json:"refund_quota"`  // type=6 退款合计
+	NetQuota           int64  `json:"net_quota"`     // 消费 − 退款
+	Records            int64  `json:"records"`
+}
+
 type UpstreamStatus struct {
 	ResellerCode      string   `json:"reseller_code"`
 	BaseURL           string   `json:"base_url"`

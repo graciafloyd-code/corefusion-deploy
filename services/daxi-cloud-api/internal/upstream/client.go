@@ -193,6 +193,30 @@ func (c *Client) ListModels(ctx context.Context) (ModelList, error) {
 	return out, nil
 }
 
+// GetResellerConsumeLogs 拉取本 reseller token(= UpstreamAPIKey)的最近用量日志(上游 /api/log/token,TokenAuthReadOnly)。
+// ⚠️ 上游该端点只回最近 MaxRecentItems(=1000)条、无时间窗/分页/聚合 —— 仅供冒烟核对,不可作正式对账依据。
+func (c *Client) GetResellerConsumeLogs(ctx context.Context) ([]byte, error) {
+	base := strings.TrimSuffix(c.cfg.UpstreamBaseURL, "/v1")
+	if c.cfg.VideoAgentBaseURL != "" {
+		base = strings.TrimRight(c.cfg.VideoAgentBaseURL, "/")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/log/token", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.UpstreamAPIKey)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("upstream log/token returned %s", resp.Status)
+	}
+	return body, nil
+}
+
 // ParseUsage extracts token usage from a non-streaming JSON chat completion body.
 func ParseUsage(body []byte) Usage {
 	var payload struct {
