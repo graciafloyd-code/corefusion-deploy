@@ -144,6 +144,49 @@ func TestChatBillsByUpstreamQuotaWhenPresent(t *testing.T) {
 	}
 }
 
+// quota:0 显式存在 → 按 0 扣、不回退(关键:区分 quota:0 与无 quota 字段)。
+func TestChatQuotaZeroExplicitChargesZeroNoFallback(t *testing.T) {
+	srv, store := newTestServer(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return mockResponse("application/json", `{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15,"quota":0}}`), nil
+	}))
+	raw := seedCustomerKey(t, store, 1000)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// quota=0 存在 → 扣 0(余额不变),不得回退按 total_tokens=15 扣
+	if bal := currentBalance(t, store, raw); bal != 1000 {
+		t.Fatalf("balance=%d want 1000(quota:0 应扣 0,不回退扣 15)", bal)
+	}
+	var total int64
+	if err := store.DB().QueryRow(`SELECT total_tokens FROM usage_records ORDER BY id DESC LIMIT 1`).Scan(&total); err != nil {
+		t.Fatalf("read usage: %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("usage_records.total_tokens=%d want 0(记 quota 单位 0)", total)
+	}
+}
+
+// 无 quota 字段 → 回退按 token 扣(防御式,上游未覆盖时)。
+func TestChatFallsBackWhenQuotaAbsent(t *testing.T) {
+	srv, store := newTestServer(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return mockResponse("application/json", `{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`), nil
+	}))
+	raw := seedCustomerKey(t, store, 1000)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	srv.Router().ServeHTTP(rec, req)
+	if bal := currentBalance(t, store, raw); bal != 1000-15 {
+		t.Fatalf("balance=%d want %d(无 quota 字段应回退扣 total_tokens=15)", bal, 1000-15)
+	}
+}
+
 func TestModelsInheritFromUpstreamModelList(t *testing.T) {
 	cfg := config.Config{
 		UpstreamBaseURL:   "https://upstream.test/v1",

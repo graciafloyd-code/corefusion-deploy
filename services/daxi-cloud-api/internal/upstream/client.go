@@ -24,8 +24,12 @@ type Usage struct {
 	PromptTokens     int64
 	CompletionTokens int64
 	TotalTokens      int64
-	// Quota 是上游实扣 quota(对齐 video 的 usage.quota)。上游未返回时为 0(DAXI 防御式回退按 token 扣)。
+	// Quota 是上游实扣 quota(对齐 video 的 usage.quota)。
 	Quota int64
+	// QuotaSet 标识响应里 usage.quota 字段是否【存在】(哪怕值为 0)。
+	// 关键:不能靠 Quota==0 判断 —— quota:0(存在且为0)与无 quota 字段在 int 零值上无法区分。
+	// QuotaSet=true 即上游显式给了 quota(含 0)→ 按 quota 扣;false=字段缺失 → 防御式回退按 token 扣。
+	QuotaSet bool
 }
 
 type ModelItem struct {
@@ -260,21 +264,25 @@ func (c *Client) GetResellerUsageSummary(ctx context.Context, start, end, scenar
 func ParseUsage(body []byte) Usage {
 	var payload struct {
 		Usage struct {
-			PromptTokens     int64 `json:"prompt_tokens"`
-			CompletionTokens int64 `json:"completion_tokens"`
-			TotalTokens      int64 `json:"total_tokens"`
-			Quota            int64 `json:"quota"`
+			PromptTokens     int64  `json:"prompt_tokens"`
+			CompletionTokens int64  `json:"completion_tokens"`
+			TotalTokens      int64  `json:"total_tokens"`
+			Quota            *int64 `json:"quota"` // 指针:nil=字段缺失,非nil=存在(含0)
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return Usage{}
 	}
-	return Usage{
+	u := Usage{
 		PromptTokens:     payload.Usage.PromptTokens,
 		CompletionTokens: payload.Usage.CompletionTokens,
 		TotalTokens:      payload.Usage.TotalTokens,
-		Quota:            payload.Usage.Quota,
 	}
+	if payload.Usage.Quota != nil {
+		u.Quota = *payload.Usage.Quota
+		u.QuotaSet = true
+	}
+	return u
 }
 
 // ParseStreamUsage extracts usage from a single SSE line when it carries a usage
@@ -291,21 +299,25 @@ func ParseStreamUsage(line []byte) (Usage, bool) {
 	}
 	var payload struct {
 		Usage *struct {
-			PromptTokens     int64 `json:"prompt_tokens"`
-			CompletionTokens int64 `json:"completion_tokens"`
-			TotalTokens      int64 `json:"total_tokens"`
-			Quota            int64 `json:"quota"`
+			PromptTokens     int64  `json:"prompt_tokens"`
+			CompletionTokens int64  `json:"completion_tokens"`
+			TotalTokens      int64  `json:"total_tokens"`
+			Quota            *int64 `json:"quota"` // 指针:nil=字段缺失,非nil=存在(含0)
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil || payload.Usage == nil {
 		return Usage{}, false
 	}
-	return Usage{
+	u := Usage{
 		PromptTokens:     payload.Usage.PromptTokens,
 		CompletionTokens: payload.Usage.CompletionTokens,
 		TotalTokens:      payload.Usage.TotalTokens,
-		Quota:            payload.Usage.Quota,
-	}, true
+	}
+	if payload.Usage.Quota != nil {
+		u.Quota = *payload.Usage.Quota
+		u.QuotaSet = true
+	}
+	return u, true
 }
 
 func defaultString(value, fallback string) string {

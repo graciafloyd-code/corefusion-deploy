@@ -193,11 +193,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		usage = upstream.ParseUsage(buf.Bytes())
 	}
 
-	// chat 计费对齐 quota:上游返回 usage.quota 则按 quota 扣(与 video 同单位);
-	// 上游尚未上线 quota 字段时防御式回退按原始 token 扣 —— 回退路径打 WARN 便于观测(上线后该日志归零=可删回退)。
+	// chat 计费对齐 quota:上游返回 usage.quota 字段(哪怕值为 0)就按 quota 扣(与 video 同单位)。
+	// 关键:靠 QuotaSet(字段是否存在)判断,不能靠 Quota>0 —— 否则 quota:0(极廉模型真 0)会误触发回退。
+	// 字段缺失才防御式回退按原始 token 扣,回退打 WARN 便于观测(上游全覆盖后该日志归零=可删回退)。
 	// 注:本步只切「按 quota 扣」;balance_tokens→balance_quota 字段合并是单独的第二步,勿在此一锅烩。
-	charge := usage.Quota
-	if charge <= 0 {
+	var charge int64
+	if usage.QuotaSet {
+		charge = usage.Quota // 含 quota=0 → 扣 0、不回退
+	} else {
 		charge = usage.TotalTokens
 		if usage.TotalTokens > 0 {
 			log.Printf("WARN chat billing fell back to raw tokens (upstream usage.quota absent): customer=%s model=%s total_tokens=%d request_id=%s",
