@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -104,10 +105,34 @@ func (s *Server) callUpstream(w http.ResponseWriter, r *http.Request, method, pa
 	return respBody, requestID, true
 }
 
-func decodeMap(body []byte) map[string]any {
-	m := map[string]any{}
-	_ = json.Unmarshal(body, &m)
-	return m
+// decodeUpstream 拆上游统一信封 {success,message,data}(common/gin.go ApiSuccess)。
+// success=false 返回带 message 的错误;无信封(老/测试)时原样返回顶层 map。
+func decodeUpstream(body []byte) (map[string]any, error) {
+	var env map[string]any
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("invalid upstream response")
+	}
+	if s, ok := env["success"].(bool); ok {
+		if !s {
+			msg, _ := env["message"].(string)
+			if strings.TrimSpace(msg) == "" {
+				msg = "upstream rejected request"
+			}
+			return nil, fmt.Errorf("%s", msg)
+		}
+		if d, ok := env["data"].(map[string]any); ok {
+			return d, nil
+		}
+		return map[string]any{}, nil
+	}
+	return env, nil
+}
+
+func subMap(m map[string]any, key string) map[string]any {
+	if v, ok := m[key].(map[string]any); ok {
+		return v
+	}
+	return nil
 }
 
 func jsonStr(m map[string]any, keys ...string) string {
@@ -119,21 +144,65 @@ func jsonStr(m map[string]any, keys ...string) string {
 	return ""
 }
 
-func jsonInt(m map[string]any, key string) int {
-	if v, ok := m[key].(float64); ok {
+// jsonIDString 读 id:上游 draft.id 是数字,task_id 是字符串,统一成 string。
+func jsonIDString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		switch v := m[k].(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				return v
+			}
+		case float64:
+			if v != 0 {
+				return strconv.FormatInt(int64(v), 10)
+			}
+		}
+	}
+	return ""
+}
+
+func quotaInt(m map[string]any, keys ...string) (int64, bool) {
+	for _, k := range keys {
+		if v, ok := m[k].(float64); ok {
+			return int64(v), true
+		}
+	}
+	return 0, false
+}
+
+// taskEstimatedQuota 从建任务响应 data 提预扣 quota:data.data.cost_snapshot.estimated_quota(真实路径),含回退。
+func taskEstimatedQuota(data map[string]any) (int64, bool) {
+	if cs := subMap(subMap(data, "data"), "cost_snapshot"); cs != nil {
+		if q, ok := quotaInt(cs, "estimated_quota"); ok {
+			return q, true
+		}
+	}
+	if cs := subMap(data, "cost_snapshot"); cs != nil {
+		if q, ok := quotaInt(cs, "estimated_quota"); ok {
+			return q, true
+		}
+	}
+	return quotaInt(data, "estimated_quota")
+}
+
+// percentInt 解析 progress:真实是 "100%" 字符串,也容忍数字。
+func percentInt(m map[string]any, key string) int {
+	switch v := m[key].(type) {
+	case float64:
 		return int(v)
+	case string:
+		s := strings.TrimSuffix(strings.TrimSpace(v), "%")
+		if n, err := strconv.Atoi(s); err == nil {
+			return n
+		}
 	}
 	return 0
 }
 
-// POST /v1/video-agent/drafts/generate —— 同步,生成即结算 draft 计费事件。
+// POST /v1/video-agent/drafts/generate —— draft 不计费(上游 estimate.is_billable=false),仅生成脚本 + 建映射。
 func (s *Server) handleVideoAgentGenerateDraft(w http.ResponseWriter, r *http.Request) {
 	apiKey, customer, ok := s.authVideoCustomer(w, r)
 	if !ok {
-		return
-	}
-	if customer.BalanceQuota < s.cfg.VideoAgentEstDraftQuota {
-		writeError(w, http.StatusPaymentRequired, "insufficient video quota balance")
 		return
 	}
 	body, err := io.ReadAll(r.Body)
@@ -147,18 +216,22 @@ func (s *Server) handleVideoAgentGenerateDraft(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "failed to check draft idempotency")
 		return
 	} else if found {
-		writeJSON(w, http.StatusOK, map[string]any{"draft_id": draft.PublicID, "scenario": draft.Scenario, "usage": map[string]any{"quota": int64(0)}})
+		writeJSON(w, http.StatusOK, map[string]any{"draft_id": draft.PublicID, "scenario": draft.Scenario})
 		return
 	}
 	respBody, _, ok := s.callUpstream(w, r, http.MethodPost, "/agents/video/drafts/generate", body, videoIdentity(apiKey, customer))
 	if !ok {
 		return
 	}
-	m := decodeMap(respBody)
-	upstreamDraftID := jsonStr(m, "id", "draft_id")
-	draftEventKey, err := videoBillingEventKey("draft", upstreamDraftID)
+	data, err := decodeUpstream(respBody)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	// 真实形态:data.draft.id(数字)。draft 不计费,仅取 id 建映射。
+	upstreamDraftID := jsonIDString(subMap(data, "draft"), "id", "draft_id")
+	if strings.TrimSpace(upstreamDraftID) == "" {
+		writeError(w, http.StatusBadGateway, "missing upstream draft id")
 		return
 	}
 	draft, _, err := s.store.UpsertVideoAgentDraft(customer.ID, apiKey.ID, scenario, upstreamDraftID, idem)
@@ -166,19 +239,10 @@ func (s *Server) handleVideoAgentGenerateDraft(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "failed to persist draft")
 		return
 	}
-	settledQuota := int64(0)
-	if quota, found := upstream.ParseQuotaUsage(respBody); found && quota > 0 {
-		if _, _, _, err := s.store.SettleVideoBillingEvent(draftEventKey, customer.ID, apiKey.ID, scenario, quota, false); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to settle draft usage")
-			return
-		}
-		settledQuota = quota
-	}
-	out := map[string]any{
-		"draft_id": draft.PublicID,
-		"scenario": scenario,
-		"draft":    sanitizeUpstream(m),
-		"usage":    map[string]any{"quota": settledQuota},
+	// 只回客户需要的:draft_id + scenario + 生成的 script(不回 estimate 货币/成本字段,不回上游内部 id)。
+	out := map[string]any{"draft_id": draft.PublicID, "scenario": scenario}
+	if script := data["script"]; script != nil {
+		out["script"] = script
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -198,7 +262,16 @@ func (s *Server) handleVideoAgentGetDraft(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"draft_id": draft.PublicID, "scenario": draft.Scenario, "draft": sanitizeUpstream(decodeMap(respBody))})
+	data, err := decodeUpstream(respBody)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	out := map[string]any{"draft_id": draft.PublicID, "scenario": draft.Scenario}
+	if script := data["script"]; script != nil {
+		out["script"] = script
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // POST /v1/video-agent/drafts/{id}/confirm
@@ -217,8 +290,12 @@ func (s *Server) handleVideoAgentConfirmDraft(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	m := decodeMap(respBody)
-	writeJSON(w, http.StatusOK, map[string]any{"draft_id": draft.PublicID, "status": mapUpstreamStatus(jsonStr(m, "status"))})
+	if _, err := decodeUpstream(respBody); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	// draft 生命周期状态(draft/confirmed),非任务枚举;确认成功统一回 confirmed。
+	writeJSON(w, http.StatusOK, map[string]any{"draft_id": draft.PublicID, "status": "confirmed"})
 }
 
 // POST /v1/video-agent/drafts/{id}/tasks —— 创建视频任务(异步,结算在终态 GET)。
@@ -241,11 +318,21 @@ func (s *Server) handleVideoAgentCreateTask(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	m := decodeMap(respBody)
-	upstreamTaskID := jsonStr(m, "id", "task_id")
-	if _, err := videoBillingEventKey("task", upstreamTaskID); err != nil {
+	data, err := decodeUpstream(respBody)
+	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
+	}
+	// 真实形态:任务 id 用 string task_id(不是数字 id)。
+	upstreamTaskID := jsonStr(data, "task_id")
+	if strings.TrimSpace(upstreamTaskID) == "" {
+		writeError(w, http.StatusBadGateway, "missing upstream task id")
+		return
+	}
+	// 预扣额度取真实 cost_snapshot.estimated_quota;缺失回退到配置占位。
+	estimatedQuota := s.cfg.VideoAgentEstTaskQuota
+	if q, ok := taskEstimatedQuota(data); ok && q > 0 {
+		estimatedQuota = q
 	}
 	task := &model.VideoTask{
 		CustomerPublicID:  customer.PublicID,
@@ -255,8 +342,8 @@ func (s *Server) handleVideoAgentCreateTask(w http.ResponseWriter, r *http.Reque
 		Scenario:          defaultScenario(draft.Scenario),
 		UpstreamTaskID:    upstreamTaskID,
 		UpstreamRequestID: requestID,
-		EstimatedQuota:    s.cfg.VideoAgentEstTaskQuota,
-		Status:            mapUpstreamStatus(jsonStr(m, "status")),
+		EstimatedQuota:    estimatedQuota,
+		Status:            mapUpstreamStatus(jsonStr(data, "status")),
 	}
 	if err := s.store.CreateVideoAgentTaskMapping(task); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist task")
@@ -319,11 +406,21 @@ func (s *Server) refreshAndSettleVideoAgentTask(ctx context.Context, task model.
 }
 
 func (s *Server) settleVideoAgentTaskFromResponse(task model.VideoTask, respBody []byte) (map[string]any, error) {
-	m := decodeMap(respBody)
+	m, err := decodeUpstream(respBody)
+	if err != nil {
+		return nil, err
+	}
 	daxiStatus := mapUpstreamStatus(jsonStr(m, "status"))
-	progress := jsonInt(m, "progress")
-	resultURL := jsonStr(m, "result_url", "final_video_url")
-	quota, found := upstream.ParseQuotaUsage(respBody)
+	progress := percentInt(m, "progress")
+	// 真实实扣在终态任务的 data.quota(= task.Quota,多退少补后);仅 Completed 时透传 result_url(失败时该字段会被塞 fail_reason)。
+	resultURL := ""
+	if daxiStatus == "Completed" {
+		resultURL = jsonStr(m, "result_url", "final_video_url")
+	}
+	quota, found := quotaInt(m, "quota", "actual_quota")
+	if quota <= 0 {
+		found = false
+	}
 
 	settledQuota := int64(0)
 	usageRecordID := int64(0)
@@ -388,9 +485,15 @@ func (s *Server) handleVideoAgentFinalVideo(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	m := decodeMap(respBody)
+	// 终片未就绪时上游回 success=false("final video is not ready"),HTTP 200 —— 不是错误,回 ready:false。
+	data, err := decodeUpstream(respBody)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"task_id": task.PublicID, "ready": false})
+		return
+	}
 	// 本期允许透传 supchuang 域名(两边自营)。
-	writeJSON(w, http.StatusOK, map[string]any{"task_id": task.PublicID, "result_url": jsonStr(m, "result_url", "final_video_url", "url")})
+	url := jsonStr(data, "result_url", "final_video_url", "url")
+	writeJSON(w, http.StatusOK, map[string]any{"task_id": task.PublicID, "ready": url != "", "result_url": url})
 }
 
 func defaultScenario(s string) string {
@@ -432,10 +535,3 @@ func (s *Server) settlePendingVideoAgentTasksOnce(cutoff time.Time) error {
 	return firstErr
 }
 
-// sanitizeUpstream 把上游 map 里若存在的 raw 状态枚举映射成 DAXI 枚举,避免漏给客户。
-func sanitizeUpstream(m map[string]any) map[string]any {
-	if raw, ok := m["status"].(string); ok {
-		m["status"] = mapUpstreamStatus(raw)
-	}
-	return m
-}

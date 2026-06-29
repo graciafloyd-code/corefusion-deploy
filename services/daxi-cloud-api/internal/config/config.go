@@ -22,9 +22,10 @@ type Config struct {
 	MaxBodyBytes       int64
 	// video-agent 富 agent 上游基址(默认从 UpstreamBaseURL 去掉 /v1,因 agent 在 /api/agents/video/* 根路径)。
 	VideoAgentBaseURL string
-	// 预估 quota(占位,宁可多扣再退;真实结算以上游 usage.quota 为准,跑真实任务后校准)。
-	VideoAgentEstDraftQuota int64 // 脚本/分镜/卖点生成一次
-	VideoAgentEstTaskQuota  int64 // 视频任务一次
+	// 预估 quota:真实契约下 draft 不计费(EstDraftQuota 已废弃保留);建任务的预扣以上游 cost_snapshot.estimated_quota 为准,
+	// EstTaskQuota 仅作建任务前的余额闸阈值 + 上游缺失时的回退(实测 15s≈570000,默认设 600000)。
+	VideoAgentEstDraftQuota int64 // 已废弃:draft 不计费(P1 实测 is_billable=false)
+	VideoAgentEstTaskQuota  int64 // 建任务余额闸阈值 + 回退
 	// 后台补偿结算:客户不轮询时,定期主动查上游终态并结算。
 	VideoAgentSettleIntervalSecs int64
 	VideoAgentSettleAfterSecs    int64
@@ -48,8 +49,8 @@ func Load() Config {
 		MaxBodyBytes:       envInt64("DAXI_MAX_BODY_BYTES", 1<<20),
 		VideoAgentBaseURL: strings.TrimRight(env("DAXI_VIDEO_AGENT_UPSTREAM_BASE_URL",
 			strings.TrimSuffix(upstreamBase, "/v1")), "/"),
-		VideoAgentEstDraftQuota:      envInt64("DAXI_VIDEO_AGENT_EST_DRAFT_QUOTA", 80000),
-		VideoAgentEstTaskQuota:       envInt64("DAXI_VIDEO_AGENT_EST_TASK_QUOTA", 2500000),
+		VideoAgentEstDraftQuota:      envInt64("DAXI_VIDEO_AGENT_EST_DRAFT_QUOTA", 0),
+		VideoAgentEstTaskQuota:       envInt64("DAXI_VIDEO_AGENT_EST_TASK_QUOTA", 600000),
 		VideoAgentSettleIntervalSecs: envInt64("DAXI_VIDEO_AGENT_SETTLE_INTERVAL_SECONDS", 60),
 		VideoAgentSettleAfterSecs:    envInt64("DAXI_VIDEO_AGENT_SETTLE_AFTER_SECONDS", 300),
 	}
