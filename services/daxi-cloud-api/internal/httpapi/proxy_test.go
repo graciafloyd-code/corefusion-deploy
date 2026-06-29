@@ -118,6 +118,32 @@ func TestProxyNonStreamingDeductsBalance(t *testing.T) {
 	}
 }
 
+// chat 计费对齐 quota:上游返回 usage.quota 时,DAXI 按 quota 扣(不是 total_tokens),且 usage_records 记 quota 单位。
+func TestChatBillsByUpstreamQuotaWhenPresent(t *testing.T) {
+	srv, store := newTestServer(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return mockResponse("application/json", `{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":8,"completion_tokens":141,"total_tokens":149,"quota":11963}}`), nil
+	}))
+	raw := seedCustomerKey(t, store, 20000)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-v4-flash","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+raw)
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if bal := currentBalance(t, store, raw); bal != 20000-11963 {
+		t.Fatalf("balance=%d want %d(应按 quota=11963 扣,不是 total_tokens=149)", bal, 20000-11963)
+	}
+	var total int64
+	if err := store.DB().QueryRow(`SELECT total_tokens FROM usage_records ORDER BY id DESC LIMIT 1`).Scan(&total); err != nil {
+		t.Fatalf("read usage: %v", err)
+	}
+	if total != 11963 {
+		t.Fatalf("usage_records.total_tokens=%d want 11963(记 quota 单位)", total)
+	}
+}
+
 func TestModelsInheritFromUpstreamModelList(t *testing.T) {
 	cfg := config.Config{
 		UpstreamBaseURL:   "https://upstream.test/v1",

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -192,10 +193,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		usage = upstream.ParseUsage(buf.Bytes())
 	}
 
-	overspend := int64(0)
-	if usage.TotalTokens > 0 {
-		overspend, _ = s.store.DecreaseCustomerBalance(customer.ID, usage.TotalTokens)
+	// chat 计费对齐 quota:上游返回 usage.quota 则按 quota 扣(与 video 同单位);
+	// 上游尚未上线 quota 字段时防御式回退按原始 token 扣 —— 回退路径打 WARN 便于观测(上线后该日志归零=可删回退)。
+	// 注:本步只切「按 quota 扣」;balance_tokens→balance_quota 字段合并是单独的第二步,勿在此一锅烩。
+	charge := usage.Quota
+	if charge <= 0 {
+		charge = usage.TotalTokens
+		if usage.TotalTokens > 0 {
+			log.Printf("WARN chat billing fell back to raw tokens (upstream usage.quota absent): customer=%s model=%s total_tokens=%d request_id=%s",
+				customer.PublicID, modelName, usage.TotalTokens, requestID)
+		}
 	}
+	overspend := int64(0)
+	if charge > 0 {
+		overspend, _ = s.store.DecreaseCustomerBalance(customer.ID, charge)
+	}
+	// total_tokens 记「实扣额度」:quota 计费时即 quota(与 video 同单位,便于对账合并);回退时为原始 total。
 	_ = s.store.RecordUsage(model.UsageRecord{
 		RequestID:        requestID,
 		CustomerID:       customer.ID,
@@ -204,7 +217,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Model:            modelName,
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
-		TotalTokens:      usage.TotalTokens,
+		TotalTokens:      charge,
 		OverspendTokens:  overspend,
 		StatusCode:       resp.StatusCode,
 	})

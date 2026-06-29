@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -41,12 +42,10 @@ func (s *Server) handleVideoReconDaxi(w http.ResponseWriter, r *http.Request) {
 
 // GET /admin/video-recon/upstream —— Query B(临时版):拉上游 /log/token 本地聚合。
 func (s *Server) handleVideoReconUpstream(w http.ResponseWriter, r *http.Request) {
-	body, err := s.upstream.GetResellerConsumeLogs(r.Context())
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "failed to pull upstream logs: "+err.Error())
-		return
-	}
-	rows, err := aggregateUpstreamResellerLogs(body)
+	start := strings.TrimSpace(r.URL.Query().Get("start"))
+	end := strings.TrimSpace(r.URL.Query().Get("end"))
+	scenario := strings.TrimSpace(r.URL.Query().Get("scenario"))
+	rows, authoritative, source, caveat, err := s.upstreamReconRows(r.Context(), start, end, scenario)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -56,17 +55,140 @@ func (s *Server) handleVideoReconUpstream(w http.ResponseWriter, r *http.Request
 		consume += x.ConsumeQuota
 		refund += x.RefundQuota
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"source":          "upstream./api/log/token",
-		"unit":            "quota",
-		"caveat":          upstreamReconCaveat,
-		"authoritative":   false,
-		"max_records_cap": 1000,
-		"total_consume":   consume,
-		"total_refund":    refund,
-		"total_net":       consume - refund,
-		"by_customer":     rows,
+	out := map[string]any{
+		"source":        source,
+		"unit":          "quota",
+		"authoritative": authoritative,
+		"total_consume": consume,
+		"total_refund":  refund,
+		"total_net":     consume - refund,
+		"by_customer":   rows,
+	}
+	if !authoritative {
+		out["caveat"] = caveat
+		out["max_records_cap"] = 1000
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// upstreamReconRows 取上游每客户用量:优先正式 reseller 汇总端点(authoritative);
+// 端点不可用(如尚未部署 → 404)时回退到 /log/token 临时版(authoritative=false,带 caveat)。
+func (s *Server) upstreamReconRows(ctx context.Context, start, end, scenario string) ([]model.VideoReconUpstreamRow, bool, string, string, error) {
+	if body, err := s.upstream.GetResellerUsageSummary(ctx, start, end, scenario); err == nil {
+		if rows, perr := parseResellerUsageSummary(body); perr == nil {
+			return rows, true, "upstream.reseller-usage-summary", "", nil
+		}
+	}
+	// 回退:临时 /log/token(最近 1000 条,不可作正式对账)
+	body, err := s.upstream.GetResellerConsumeLogs(ctx)
+	if err != nil {
+		return nil, false, "", "", fmt.Errorf("failed to pull upstream usage: %w", err)
+	}
+	rows, err := aggregateUpstreamResellerLogs(body)
+	if err != nil {
+		return nil, false, "", "", err
+	}
+	return rows, false, "upstream./api/log/token", upstreamReconCaveat, nil
+}
+
+// parseResellerUsageSummary 解析上游正式端点响应 {success,data:{by_customer:[...]}}。
+// by_customer 字段(reseller_customer_id/consume_quota/refund_quota/net_quota/records)与 VideoReconUpstreamRow 对齐。
+func parseResellerUsageSummary(body []byte) ([]model.VideoReconUpstreamRow, error) {
+	var env struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    struct {
+			ByCustomer []model.VideoReconUpstreamRow `json:"by_customer"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("invalid usage-summary response")
+	}
+	if !env.Success {
+		msg := strings.TrimSpace(env.Message)
+		if msg == "" {
+			msg = "upstream rejected usage-summary"
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	return env.Data.ByCustomer, nil
+}
+
+// GET /admin/video-recon/diff —— step2:DAXI(A)与上游(B)按客户自动比差。
+// 口径:DAXI 每客户净额(A,SUM(total_tokens))应 = 上游该 customer_id 的(消费−退款)净额(B)。
+// 匹配键:DAXI customer_public_id == 上游 reseller_customer_id(DAXI 发的 X-Reseller-Customer-ID 即 customer.PublicID)。
+func (s *Server) handleVideoReconDiff(w http.ResponseWriter, r *http.Request) {
+	start := strings.TrimSpace(r.URL.Query().Get("start"))
+	end := strings.TrimSpace(r.URL.Query().Get("end"))
+	scenario := strings.TrimSpace(r.URL.Query().Get("scenario"))
+
+	daxiRows, err := s.store.VideoReconByCustomer(start, end)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to query daxi usage")
+		return
+	}
+	upRows, authoritative, source, _, err := s.upstreamReconRows(r.Context(), start, end, scenario)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	type diffRow struct {
+		CustomerPublicID string `json:"customer_public_id"`
+		Company          string `json:"company,omitempty"`
+		DaxiNet          int64  `json:"daxi_net_quota"`
+		UpstreamNet      int64  `json:"upstream_net_quota"`
+		Diff             int64  `json:"diff"` // daxi - upstream(0 = 对平)
+		Match            bool   `json:"match"`
+	}
+	merged := map[string]*diffRow{}
+	for _, a := range daxiRows {
+		merged[a.CustomerPublicID] = &diffRow{CustomerPublicID: a.CustomerPublicID, Company: a.Company, DaxiNet: a.NetQuota}
+	}
+	for _, b := range upRows {
+		row := merged[b.ResellerCustomerID]
+		if row == nil {
+			row = &diffRow{CustomerPublicID: b.ResellerCustomerID}
+			merged[b.ResellerCustomerID] = row
+		}
+		row.UpstreamNet = b.NetQuota
+	}
+	rows := make([]diffRow, 0, len(merged))
+	var totalDaxi, totalUp, mismatches int64
+	for _, row := range merged {
+		row.Diff = row.DaxiNet - row.UpstreamNet
+		row.Match = row.Diff == 0
+		if !row.Match {
+			mismatches++
+		}
+		totalDaxi += row.DaxiNet
+		totalUp += row.UpstreamNet
+		rows = append(rows, *row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Diff != rows[j].Diff {
+			return abs64(rows[i].Diff) > abs64(rows[j].Diff)
+		}
+		return rows[i].CustomerPublicID < rows[j].CustomerPublicID
 	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"unit":                  "quota",
+		"window":                map[string]string{"start": start, "end": end},
+		"upstream_source":       source,
+		"upstream_authoritative": authoritative,
+		"total_daxi_net":        totalDaxi,
+		"total_upstream_net":    totalUp,
+		"total_diff":            totalDaxi - totalUp,
+		"mismatch_count":        mismatches,
+		"rows":                  rows,
+	})
+}
+
+func abs64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // aggregateUpstreamResellerLogs 解析上游 /api/log/token 响应(信封 {success,data:[]log}),

@@ -98,6 +98,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /admin/recharges", s.admin(s.handleCreateRecharge))
 	s.mux.HandleFunc("GET /admin/video-recon/daxi", s.admin(s.handleVideoReconDaxi))
 	s.mux.HandleFunc("GET /admin/video-recon/upstream", s.admin(s.handleVideoReconUpstream))
+	s.mux.HandleFunc("GET /admin/video-recon/diff", s.admin(s.handleVideoReconDiff))
 	s.mux.HandleFunc("GET /admin/model-routes", s.admin(s.handleListModelRoutes))
 	s.mux.HandleFunc("POST /admin/model-routes", s.admin(s.handleUpsertModelRoute))
 	s.mux.HandleFunc("PATCH /admin/model-routes/", s.admin(s.handlePatchModelRoute))

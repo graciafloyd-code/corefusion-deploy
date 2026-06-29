@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -23,6 +24,8 @@ type Usage struct {
 	PromptTokens     int64
 	CompletionTokens int64
 	TotalTokens      int64
+	// Quota 是上游实扣 quota(对齐 video 的 usage.quota)。上游未返回时为 0(DAXI 防御式回退按 token 扣)。
+	Quota int64
 }
 
 type ModelItem struct {
@@ -217,6 +220,42 @@ func (c *Client) GetResellerConsumeLogs(ctx context.Context) ([]byte, error) {
 	return body, nil
 }
 
+// GetResellerUsageSummary 调上游正式对账端点 GET /api/agents/video/reseller/usage-summary(TokenAuthReadOnly,
+// token+reseller 自我隔离;按 customer_id 聚合 type=2 消费/type=6 退款净额)。这是对账 Query B 的权威源。
+func (c *Client) GetResellerUsageSummary(ctx context.Context, start, end, scenario string) ([]byte, error) {
+	base := strings.TrimSuffix(c.cfg.UpstreamBaseURL, "/v1")
+	if c.cfg.VideoAgentBaseURL != "" {
+		base = strings.TrimRight(c.cfg.VideoAgentBaseURL, "/")
+	}
+	q := url.Values{}
+	if start != "" {
+		q.Set("start", start)
+	}
+	if end != "" {
+		q.Set("end", end)
+	}
+	if scenario != "" {
+		q.Set("scenario", scenario)
+	}
+	q.Set("group_by", "customer")
+	u := base + "/api/agents/video/reseller/usage-summary?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.UpstreamAPIKey)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("upstream usage-summary returned %s", resp.Status)
+	}
+	return body, nil
+}
+
 // ParseUsage extracts token usage from a non-streaming JSON chat completion body.
 func ParseUsage(body []byte) Usage {
 	var payload struct {
@@ -224,6 +263,7 @@ func ParseUsage(body []byte) Usage {
 			PromptTokens     int64 `json:"prompt_tokens"`
 			CompletionTokens int64 `json:"completion_tokens"`
 			TotalTokens      int64 `json:"total_tokens"`
+			Quota            int64 `json:"quota"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -233,6 +273,7 @@ func ParseUsage(body []byte) Usage {
 		PromptTokens:     payload.Usage.PromptTokens,
 		CompletionTokens: payload.Usage.CompletionTokens,
 		TotalTokens:      payload.Usage.TotalTokens,
+		Quota:            payload.Usage.Quota,
 	}
 }
 
@@ -253,6 +294,7 @@ func ParseStreamUsage(line []byte) (Usage, bool) {
 			PromptTokens     int64 `json:"prompt_tokens"`
 			CompletionTokens int64 `json:"completion_tokens"`
 			TotalTokens      int64 `json:"total_tokens"`
+			Quota            int64 `json:"quota"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil || payload.Usage == nil {
@@ -262,6 +304,7 @@ func ParseStreamUsage(line []byte) (Usage, bool) {
 		PromptTokens:     payload.Usage.PromptTokens,
 		CompletionTokens: payload.Usage.CompletionTokens,
 		TotalTokens:      payload.Usage.TotalTokens,
+		Quota:            payload.Usage.Quota,
 	}, true
 }
 
